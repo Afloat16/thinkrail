@@ -1,4 +1,4 @@
-import { isAbsolute, relative } from "node:path";
+import { isAbsolute, relative, sep } from "node:path";
 import type { WorkspaceCreation, WorkspaceCreationRemoved } from "@thinkrail/contracts";
 import { canonicalPath } from "../git";
 import {
@@ -85,7 +85,7 @@ export function creationOwnsPath(path: string): boolean {
 	const wanted = canonicalPath(path);
 	return loadWorkspaceCreations().some((record) => {
 		const rel = relative(canonicalPath(record.worktreePath), wanted);
-		return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+		return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 	});
 }
 

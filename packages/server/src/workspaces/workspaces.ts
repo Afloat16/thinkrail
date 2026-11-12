@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
 	DEFAULT_WORKSPACE_NAME,
 	type DiffStats,
@@ -299,7 +299,7 @@ export function managedPathOwned(path: string): boolean {
 	const wanted = canonicalPath(path);
 	const within = (candidate: string) => {
 		const rel = relative(wanted, canonicalPath(candidate));
-		return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+		return rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
 	};
 	return (
 		loadWorkspaces().some((workspace) => canonicalPath(workspace.worktreePath) === wanted) ||

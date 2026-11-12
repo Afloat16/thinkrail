@@ -155,7 +155,9 @@ registered under the chats root is neither offered by `listExistingWorktrees` no
   **Cleanup never touches a folder ThinkRail has open** (`managedPathOwned`: a workspace at that path or a
   project at or inside it), re-checked after every await before each destructive step, and the host's
   project-open door refuses a folder a creation still owns (`creationOwnsPath`), so nothing can adopt it
-  mid-cleanup; a branch checked out in another worktree is left alone. **Host restart:** graceful shutdown
+  mid-cleanup. Both ownership checks use path segments: a literal child name such as `..notes` is inside
+  the folder, while `..` and parent-relative paths are outside. A branch checked out in another worktree
+  is left alone. **Host restart:** graceful shutdown
   aborts running jobs (`stopWorkspaceCreations`) and `interruptWorkspaceCreations` marks every leftover
   `running` record `interrupted` at start — never restarted on its own (the user decides). A record whose
   workspace already exists died mid-handoff: it stays, and `replayPendingHandoffs` (run by the host once its

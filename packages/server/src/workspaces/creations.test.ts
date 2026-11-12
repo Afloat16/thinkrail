@@ -350,6 +350,8 @@ posix("a folder that is still being created cannot be opened as a project", asyn
 	const path = join(dataDir, "worktrees", "repo", "workspace-1");
 	expect(creationOwnsPath(path)).toBe(true);
 	expect(creationOwnsPath(join(path, "nested"))).toBe(true);
+	expect(creationOwnsPath(join(path, "..notes"))).toBe(true);
+	expect(creationOwnsPath(join(path, "..", "sibling"))).toBe(false);
 	expect(creationOwnsPath(repo)).toBe(false);
 	await awaitWorkspaceCreation(creation.id);
 	expect(creationOwnsPath(path)).toBe(false);
@@ -392,6 +394,32 @@ posix("discarding an interrupted creation removes its folder and branch", async 
 	expect(registered()).toEqual([realpathSync.native(repo)]);
 	expect(existsSync(join(dataDir, "worktrees", "repo", "workspace-1"))).toBe(false);
 	expect(gitOut(repo, "branch", "--list", "workspace-1")).toBe("");
+});
+
+posix("discard keeps an open project inside a literal ..-prefixed child folder", async () => {
+	hook("sleep 5");
+	const creation = startWorkspaceCreation("p1");
+	await until(() => listWorkspaceCreations()[0]?.phase === "checking-out");
+	await stopWorkspaceCreations();
+	interruptWorkspaceCreations();
+	const path = join(dataDir, "worktrees", "repo", "workspace-1");
+	const nested = join(path, "..notes");
+	mkdirSync(nested);
+	const note = join(nested, "draft.md");
+	writeFileSync(note, "keep this draft\n");
+	writeFileSync(
+		join(dataDir, "projects.json"),
+		JSON.stringify([
+			{ id: "p1", name: "repo", path: repo, slug: "repo", lastOpened: 1 },
+			{ id: "p2", name: "notes", path: nested, slug: "notes", lastOpened: 2 },
+		]),
+	);
+
+	await dismissWorkspaceCreation(creation.id);
+	expect(existsSync(note)).toBe(true);
+	expect(readFileSync(note, "utf8")).toBe("keep this draft\n");
+	expect(registered()).toContain(path);
+	expect(gitOut(repo, "branch", "--list", "workspace-1")).toContain("workspace-1");
 });
 
 posix("in-flight creates reserve names and stay out of the existing-worktree doors", async () => {
