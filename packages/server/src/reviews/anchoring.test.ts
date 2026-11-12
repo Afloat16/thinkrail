@@ -86,6 +86,49 @@ test("a truly ambiguous fragment (identical context) goes outdated", () => {
 	expect(reanchor(anchor, dup).state).toBe("outdated");
 });
 
+test.each([
+	{ content: "aaa", exact: "aa", prefix: "", suffix: "", line: null },
+	{ content: "aaa!", exact: "aa", prefix: "", suffix: "!", line: 1 },
+	{ content: "before\ntoken\nafter", exact: "token", prefix: "gone", suffix: "missing", line: 2 },
+	{ content: "token\nother\ntoken", exact: "token", prefix: "gone", suffix: "missing", line: null },
+	{
+		content: "wrong\ntoken\nwrong\ntoken\nchosen\ntoken\nend",
+		exact: "token",
+		prefix: "chosen\n",
+		suffix: "\nend",
+		line: 6,
+	},
+	{
+		content: "chosen\ntoken\nend\nwrong\ntoken\nchosen\ntoken\nend",
+		exact: "token",
+		prefix: "chosen\n",
+		suffix: "\nend",
+		line: null,
+	},
+])(
+	"quote uniqueness preserves overlap and context fallback: %j",
+	({ content, exact, prefix, suffix, line }) => {
+		const anchor: ReviewAnchor = {
+			path: "a.txt",
+			side: "worktree",
+			contentHash: "stale",
+			selectors: [
+				{ kind: "lineRange", startLine: 1, endLine: 1 },
+				{ kind: "textQuote", exact, prefix, suffix },
+			],
+		};
+		const result = reanchor(anchor, content);
+		expect(result.state).toBe(line === null ? "outdated" : "moved");
+		if (line === null) expect(result.anchor).toBe(anchor);
+		else
+			expect(lineRangeOf(result.anchor)).toEqual({
+				kind: "lineRange",
+				startLine: line,
+				endLine: line,
+			});
+	},
+);
+
 test("a file-level anchor on changed content is moved with a refreshed hash, never outdated", () => {
 	const anchor: ReviewAnchor = {
 		path: "a.ts",
