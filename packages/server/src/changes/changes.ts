@@ -1,9 +1,13 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import {
 	chmodSync,
+	closeSync,
+	constants,
+	fstatSync,
 	linkSync,
 	lstatSync,
 	mkdirSync,
+	openSync,
 	readFileSync,
 	renameSync,
 	rmSync,
@@ -117,7 +121,15 @@ function worktreeState(abs: string, path: string): FileState {
 	}
 	if (stat.isSymbolicLink())
 		unsupported(path, "is a symbolic link, which change mutations do not support.");
-	return { bytes: readFileSync(abs), mode: stat.mode & 0o777 };
+	if (!stat.isFile()) unsupported(path, "is not a regular file.");
+	const fd = openSync(abs, constants.O_RDONLY | constants.O_NONBLOCK);
+	try {
+		const opened = fstatSync(fd);
+		if (!opened.isFile()) unsupported(path, "is not a regular file.");
+		return { bytes: readFileSync(fd), mode: opened.mode & 0o777 };
+	} finally {
+		closeSync(fd);
+	}
 }
 
 function hashOf(state: FileState): string | null {
