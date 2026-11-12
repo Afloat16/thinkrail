@@ -429,7 +429,8 @@ the document records the `dialect` it needed, and a `.json` file that only parse
 file that is not even JSONC renders an explicit `json-invalid` notice pointing to Source instead of a
 blank pane, in both the view and the diff. The scanner builds the parsed value and an RFC-6901
 pointer-to-source-line index in one pass; duplicate object keys resolve to the last occurrence,
-matching JSON value semantics. Selecting a non-root node emits
+matching JSON value semantics. Replacing a duplicate removes only the previous subtree's indexed nodes;
+it does not scan or copy the index for unrelated nodes. Selecting a non-root node emits
 its mandatory `lineRange` plus `structural { scheme: "json-pointer", ref }`; a pointer absent after an edit,
 or one now naming a node outside the host-reanchored line range, is reported unplaced. The collapsible
 unified diff comes from a `jsondiffpatch` instance with move detection
