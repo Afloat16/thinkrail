@@ -149,6 +149,24 @@ test("openProject still reopens a closed project whose own Default workspace hol
 	expect(listProjects().map((p) => p.id)).toEqual([project.id]);
 });
 
+test.skipIf(process.platform === "win32").each([" ", "\t", "\n", "\r"])(
+	"opening a repository preserves trailing path whitespace %j",
+	(suffix) => {
+		const plain = join(dataDir, "repo");
+		const path = `${plain}${suffix}`;
+		makeRepo(plain);
+		makeRepo(path);
+		const child = join(path, "nested");
+		mkdirSync(child);
+		const other = openProject(plain);
+		const project = openProject(child);
+		expect(project.path).toBe(path);
+		expect(project.id).not.toBe(other.id);
+		expect(openProject(path).id).toBe(project.id);
+		expect(getProjects()).toHaveLength(2);
+	},
+);
+
 test("inspectProjectPath: a path that doesn't exist is `missing`", () => {
 	expect(inspectProjectPath(join(dataDir, "nope"))).toEqual({ kind: "missing" });
 });

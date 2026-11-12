@@ -18,8 +18,10 @@ ref off the workspace-create critical path.
 ## Boundary
 
 - **Owns:** `git(cwd, args)` (spawn git *sync*, capture trimmed stdout/stderr + ok; `opts.raw` keeps
-  decoded stdout untrimmed) and its module-internal `gitBytes(cwd, args, opts?)` twin (sync,
-  byte-preserving, retained for `reviews`' synchronous snapshot pass). **Every sync call has a deadline**
+  decoded stdout untrimmed). Root-path probes use raw output and remove only Git's final LF: trailing
+  directory whitespace remains part of identity, including when checking a detached checkout.
+  Its module-internal `gitBytes(cwd, args, opts?)` twin is sync,
+  byte-preserving, retained for `reviews`' synchronous snapshot pass. **Every sync call has a deadline**
   (`opts.timeoutMs`, default 10s): a sync spawn holds the host's single event loop for as long as git
   runs, so an unbounded one turned a hung git (a stuck fsmonitor, a dead network mount, a held lock) into
   a frozen host. On expiry git gets `SIGTERM` (so it removes its `.lock` files; a `SIGKILL` would leave
