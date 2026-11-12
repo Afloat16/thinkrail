@@ -144,7 +144,7 @@ async function readProviderListing(
 				: [],
 		),
 	);
-	return ids.size > 0 ? { baseUrl, ids } : undefined;
+	return ids.size > 0 || body.data.length === 0 ? { baseUrl, ids } : undefined;
 }
 
 function listingRequest(

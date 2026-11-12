@@ -164,6 +164,53 @@ test("an unreadable listing leaves the catalog unfiltered", async () => {
 	expect(modelIds(runtime, "openai")).toContain("gpt-4");
 });
 
+test("a successful empty listing removes unavailable models and can later recover", async () => {
+	const runtime = await runtimeWith({});
+	let data: unknown[] = [{ id: "gpt-5.5" }];
+	const server = Bun.serve({
+		port: 0,
+		fetch: () => Response.json({ data }),
+	});
+	servers.push(server);
+	runtime.registerProvider("openai", {
+		baseUrl: `http://127.0.0.1:${server.port}/v1`,
+		apiKey: "wire-proxy",
+	});
+	await runtime.refresh({ allowNetwork: false });
+	let published = 0;
+	setModelListingPublisher(() => {
+		published += 1;
+	});
+	expect(await refreshModelListings(runtime, new Set(["openai"]))).toBe(true);
+	expect(modelIds(runtime, "openai")).toEqual(["gpt-5.5"]);
+
+	data = [];
+	expect(await refreshModelListings(runtime, new Set(["openai"]), { force: true })).toBe(true);
+	expect(modelIds(runtime, "openai")).toEqual([]);
+	expect(published).toBe(2);
+	expect(await refreshModelListings(runtime, new Set(["openai"]), { force: true })).toBe(false);
+
+	data = [{ id: "gpt-5.5" }];
+	expect(await refreshModelListings(runtime, new Set(["openai"]), { force: true })).toBe(true);
+	expect(modelIds(runtime, "openai")).toEqual(["gpt-5.5"]);
+	expect(published).toBe(3);
+
+	data = [null, {}, { id: 7 }];
+	expect(await refreshModelListings(runtime, new Set(["openai"]), { force: true })).toBe(false);
+	expect(modelIds(runtime, "openai")).toEqual(["gpt-5.5"]);
+});
+
+test("the first successful empty listing does not expose the unfiltered catalog", async () => {
+	const runtime = await runtimeWith({});
+	const proxy = serveListing("/v1/models", []);
+	runtime.registerProvider("openai", { baseUrl: `${proxy}/v1`, apiKey: "wire-proxy" });
+	await runtime.refresh({ allowNetwork: false });
+
+	expect(await refreshModelListings(runtime, new Set(["openai"]))).toBe(true);
+
+	expect(modelIds(runtime, "openai")).toEqual([]);
+});
+
 test("a stalled credential resolver cannot wedge listing refreshes past the deadline", async () => {
 	let authSignal: AbortSignal | undefined;
 	const runtime = {

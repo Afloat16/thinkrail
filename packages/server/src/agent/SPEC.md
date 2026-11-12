@@ -124,7 +124,9 @@ re-opened transcripts provider-valid.
     5s-bounded end to end (one deadline covers credential resolution and the fetch, so a stalled OAuth
     refresh cannot wedge the single flight), throttled to 60s per runtime, and a change publishes
     `provider.changed` so the picker re-reads; an unknown wire or a never-read listing filters nothing,
-    and a failed re-read keeps the last listing. Failures log only a closed count, never provider ids or
+    and a failed re-read keeps the last listing. A successful empty `data` array is an authoritative empty
+    listing, so it removes the provider's unavailable models until a later listing advertises them again;
+    a nonempty array without any usable model ids remains an unreadable response. Failures log only a closed count, never provider ids or
     the provider's error text. Direct API keys and other subscriptions keep pi's catalog: no listing was verified to
     agree with pi's aliases there.
   - `modelDefaults` — `piDefaultModelRef()` reads pi's global `defaultProvider`/`defaultModel`, undefined when
