@@ -195,6 +195,8 @@ ref off the workspace-create critical path.
   via `numstatPath` to match `--name-status`; binary rows dropped; untracked files count their whole
   content as added only when `fs.classifyBytes` agrees it is text, so invalid UTF-8, NUL-bearing, and
   magic-typed untracked files omit counts exactly as their `ResourceMeta` does) for the Changes tree's `+/−` badges.
+  Only regular untracked files are read for counts: symlinks retain their untracked entry without counts,
+  so listing changes never reads a link's target or spends its byte budget on that target.
   Untracked files are read asynchronously, at most 2MB each and 32MB per call in path order; files past
   either cap omit their count, so a worktree full of unignored output cannot stall the read;
   `gitDiffFile(workspaceId, path, scope?)` → `{ original, modified, originalOid, meta: { original, modified } }` — `originalOid` is the range's resolved immutable start (or `null`) and both
