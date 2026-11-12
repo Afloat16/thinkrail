@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
+	statSync,
 	symlinkSync,
 	writeFileSync,
 } from "node:fs";
@@ -64,6 +66,52 @@ describe("templateDirs", () => {
 });
 
 describe("saveTemplate -> listTemplates -> getTemplate", () => {
+	test.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+		"an overwrite still refuses a read-only template",
+		() => {
+			const saved = saveTemplate(dirs, "global", "readonly", "keep this content");
+			chmodSync(saved.filePath, 0o400);
+			expect(() => saveTemplate(dirs, "global", "readonly", "replacement")).toThrow();
+			expect(getTemplate(dirs, "readonly").content).toBe("keep this content");
+		},
+	);
+	test.skipIf(process.platform === "win32")(
+		"an interrupted overwrite preserves the previous template in either scope",
+		() => {
+			for (const scope of ["global", "project"] as const) {
+				const previous = `Previous ${scope} template`;
+				saveTemplate(dirs, scope, "recoverable", previous);
+				const child = Bun.spawnSync(
+					[
+						"sh",
+						"-c",
+						'ulimit -f 1; exec "$@"',
+						"--",
+						process.execPath,
+						"--eval",
+						`const { saveTemplate } = await import(${JSON.stringify(import.meta.resolve("./templates"))});
+console.log("saving template");
+saveTemplate(${JSON.stringify(dirs)}, ${JSON.stringify(scope)}, "recoverable", "replacement".repeat(4096));`,
+					],
+					{ stdout: "pipe", stderr: "pipe", stdin: "ignore" },
+				);
+				expect(child.stdout.toString()).toContain("saving template");
+				expect(child.success).toBe(false);
+				expect(getTemplate(dirs, "recoverable", scope).content).toBe(previous);
+			}
+		},
+	);
+
+	test.skipIf(process.platform === "win32")(
+		"an overwrite preserves existing file permissions",
+		() => {
+			const saved = saveTemplate(dirs, "global", "permissions", "old content");
+			chmodSync(saved.filePath, 0o640);
+			saveTemplate(dirs, "global", "permissions", "new content");
+			expect(statSync(saved.filePath).mode & 0o777).toBe(0o640);
+		},
+	);
+
 	test("round-trips frontmatter, surfacing description/argumentHint, content = full file text", () => {
 		const content = [
 			"---",

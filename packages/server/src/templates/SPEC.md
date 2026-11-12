@@ -88,6 +88,10 @@ assumption; re-verify on a pi bump.
 
 ## Design
 
+- `saveTemplate` writes into a unique same-directory temporary file, then renames it over the template
+  only after the whole write succeeds. An interrupted or failed write leaves the previous template
+  intact. Replacements retain existing file permissions; new files use the process's normal creation
+  mode. Temporary files never enter the template listing and are removed on handled failures.
 - `templateDirs(cwd?, agentDir = getAgentDir())` → `{ globalDir, projectDir? }` — pure path arithmetic,
   no filesystem access. `agentDir`'s default is a **default-parameter expression**, evaluated at call
   time, not a module-level constant — `getAgentDir()` reads `PI_CODING_AGENT_DIR` live (history/SPEC.md

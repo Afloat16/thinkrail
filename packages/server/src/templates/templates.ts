@@ -1,5 +1,9 @@
+import { randomUUID } from "node:crypto";
 import {
+	accessSync,
+	chmodSync,
 	closeSync,
+	constants,
 	existsSync,
 	lstatSync,
 	mkdirSync,
@@ -7,6 +11,7 @@ import {
 	readdirSync,
 	readFileSync,
 	readSync,
+	renameSync,
 	rmSync,
 	type Stats,
 	writeFileSync,
@@ -188,8 +193,16 @@ export function saveTemplate(
 	if (existing && !existing.isFile()) {
 		throw new Error(`refusing to write through a non-regular file: ${name}.md`);
 	}
+	if (existing) accessSync(filePath, constants.W_OK);
 	mkdirSync(dir, { recursive: true });
-	writeFileSync(filePath, content, "utf-8");
+	const temporary = join(dir, `.template-${randomUUID()}.tmp`);
+	try {
+		writeFileSync(temporary, content, { encoding: "utf-8", flag: "wx", mode: existing?.mode });
+		if (existing) chmodSync(temporary, existing.mode);
+		renameSync(temporary, filePath);
+	} finally {
+		rmSync(temporary, { force: true });
+	}
 	const template = readTemplateFile(dir, scope, name);
 	if (!template) throw new Error(`failed to save template: ${name}`);
 	return template;
