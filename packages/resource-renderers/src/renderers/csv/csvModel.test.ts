@@ -121,3 +121,25 @@ test("the delimiter is the one that splits the sampled records into a consistent
 	expect(sniffDelimiter("a.csv", "a;b;c\nd;e\nf;g;h\n")).toBe(",");
 	expect(sniffDelimiter("a.csv", "a;b|c\nd;e|f\n")).toBe(",");
 });
+
+for (const delimiter of [",", ";", "\t", "|"] as const) {
+	test.each(["\n", "\r\n", "\r"])(
+		`delimiter ${JSON.stringify(delimiter)} is inferred from complete quoted records with %j endings`,
+		(ending) => {
+			const text = `\uFEFFid${delimiter}note${ending}1${delimiter}"first${ending}second ""quoted"""${ending}2${delimiter}plain`;
+			const detected = sniffDelimiter("data.csv", text);
+			expect(detected).toBe(delimiter);
+			expect(parseCsv(text, detected).rows.map((row) => row.cells)).toEqual([
+				["id", "note"],
+				["1", 'first\nsecond "quoted"'],
+				["2", "plain"],
+			]);
+		},
+	);
+}
+
+test("delimiter sampling counts twenty logical records, including long quoted fields", () => {
+	const first = `1;"${Array.from({ length: 25 }, (_, index) => `line ${index}`).join("\n")}"`;
+	const records = [first, ...Array.from({ length: 19 }, (_, index) => `${index + 2};plain`)];
+	expect(sniffDelimiter("data.csv", `${records.join("\n")}\nignored;extra;fields`)).toBe(";");
+});

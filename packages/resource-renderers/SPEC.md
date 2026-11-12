@@ -407,9 +407,11 @@ swipe/divider/opacity overlay geometry use inline values.
 
 `thinkrail/csv` parses CSV/TSV locally with an RFC-4180 state machine, including escaped quotes, CRLF, and
 quoted fields spanning source lines. The delimiter is **inferred from the shape of the first twenty
-non-empty records** (`sniffDelimiter`, BOM ignored): a candidate among `,` `;` `\t` `|` qualifies only
-if it splits every sampled record into the same number of fields, at least two; comma wins whenever it
-qualifies, otherwise the single widest qualifier, otherwise comma — so a header value that happens to
+non-empty records** (`sniffDelimiter`, BOM ignored). Sampling recognizes LF, CRLF and CR record endings
+only outside quoted fields, so embedded line breaks and escaped quotes stay within one sample; it stops
+after twenty complete non-empty records. A candidate among `,` `;` `\t` `|` qualifies only if it splits
+every sampled record into the same number of fields, at least two; comma wins whenever it qualifies,
+otherwise the single widest qualifier, otherwise comma — so a header value that happens to
 contain semicolons never reclassifies a comma file, while a locale export of `id;name;score` is a table
 and not one column; `.tsv` is always tab. A diff samples the modified side first and falls back to the
 original, so both sides parse with one delimiter. The view keeps the header fixed and virtualizes data rows with
