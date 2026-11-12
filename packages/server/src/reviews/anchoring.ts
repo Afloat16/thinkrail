@@ -143,8 +143,8 @@ export function buildTextQuote(content: string, startLine: number, endLine: numb
 	const before = lines.slice(0, start - 1).join("\n");
 	const exact = lines.slice(start - 1, end).join("\n");
 	const after = lines.slice(end).join("\n");
-	const prefixRaw = before.length > 0 ? `${before}\n` : "";
-	const suffixRaw = after.length > 0 ? `\n${after}` : "";
+	const prefixRaw = start > 1 ? `${before}\n` : "";
+	const suffixRaw = end < lines.length ? `\n${after}` : "";
 	return {
 		kind: "textQuote",
 		exact,
