@@ -153,7 +153,7 @@ export function repositoryRoot(cwd: string): string {
 				if (pointer) {
 					const gitDir = resolve(dir, pointer);
 					const linked = gitDir.match(/^(.*)[\\/]worktrees[\\/][^\\/]+$/);
-					root = dirname(linked ? (linked[1] ?? gitDir) : gitDir);
+					root = linked ? dirname(linked[1] ?? gitDir) : dir;
 					break;
 				}
 			}

@@ -45,7 +45,9 @@ this module never spawns npm or git itself.
   every worktree of the project shares the switch as they share its npm/git declarations while two
   unrelated repositories declaring `./tools` do not; `repositoryRoot` reads a linked worktree's `.git`
   file — `gitdir: …/.git/worktrees/<name>` — back to the main worktree without spawning git, and a
-  folder that is no checkout is its own root) and `disabledDeclarationIdentities` (the switch
+  submodule or separate-git-dir checkout keeps its own worktree root: the parent of its external
+  metadata directory is not a shared package identity. A folder that is no checkout is its own root)
+  and `disabledDeclarationIdentities` (the switch
   set closed over pi's equivalence: when any declaration of a pi identity is switched off, every alias
   is — hiding one must never let pi load the package through another; the `enabled` view and the
   catalog's `enabled` both use it), `resolveLocalSource` (pi's private `resolvePath` for a local
