@@ -49,12 +49,13 @@ export function revertedText(
 	target: { original: LineSpan; modified: LineSpan },
 ): string {
 	const from = target.original.start - 1;
-	const segments = [...modified];
-	segments.splice(
-		target.modified.start - 1,
-		target.modified.count,
-		...original.slice(from, from + target.original.count),
-	);
+	const at = target.modified.start - 1;
+	const segments = modified
+		.slice(0, at)
+		.concat(
+			original.slice(from, from + target.original.count),
+			modified.slice(at + target.modified.count),
+		);
 	const eol = dominantEol(modified) ?? dominantEol(original) ?? "\n";
 	for (let index = 0; index < segments.length - 1; index++) {
 		const segment = segments[index] ?? "";
