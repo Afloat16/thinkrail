@@ -1,0 +1,90 @@
+name: Verify prepared contributions
+on:
+  push:
+    branches: [chore/verify-thinkrail-submissions-20261113]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    name: Verify contribution ${{ matrix.number }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        include:
+          - number: "01"
+            sha: "5e9a274bf3e43af42e34970814973e6f67deffe5"
+          - number: "02"
+            sha: "172782cfb23177191a75629429a3ae158482e310"
+          - number: "03"
+            sha: "5ca0e53d00d44b1b06b913d668ec9754ce3af8e2"
+          - number: "04"
+            sha: "d4a89abeaa763eea2393e148f963d18e17ac63bb"
+          - number: "05"
+            sha: "beb74751098aef1a21fbda447aeb0a5ab2193ab4"
+          - number: "06"
+            sha: "d7814f8743154307563db65b651ab364ba308071"
+          - number: "07"
+            sha: "6be29a92811fb79e2999c228dd7d1c5d2ae1bc33"
+          - number: "08"
+            sha: "103a9761681b615954c6d07c48dc9a66b5fb5bea"
+          - number: "09"
+            sha: "fc3dffdddf7ed400dbe1f943acf7ae2e613c8356"
+          - number: "10"
+            sha: "af973cf6f6674ccf305547e02e959af2b847d4e4"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ matrix.sha }}
+          persist-credentials: false
+      - name: Confirm source revision
+        run: test "$(git rev-parse HEAD)" = "${{ matrix.sha }}"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - run: bun install --frozen-lockfile
+      - name: Static gates
+        run: |
+          bun run check:deps
+          bun run check:boundaries
+          bun run check:seams
+          bun run check:spec-surface
+          bun run check:i18n
+          bun run check:compiler
+          bun run lint
+      - name: Download Electrobun toolchain
+        run: .github/scripts/prepare-electrobun.sh
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Full unit suite
+        run: bun run test
+      - name: Pi package parity
+        run: bun run check:pi-packages
+      - name: Start browser download
+        run: .github/scripts/install-playwright.sh start webkit
+      - name: Install WebKit system libraries
+        uses: ./.github/actions/apt-packages
+        timeout-minutes: 10
+        with:
+          set: webkit
+      - run: bun run build:web
+      - name: Finish browser download
+        timeout-minutes: 8
+        run: .github/scripts/install-playwright.sh wait webkit
+      - name: Complete no-agent browser suite
+        run: bun run e2e
+        env:
+          THINKRAIL_E2E_SKIP_BUILD: "1"
+      - name: Preserve failure report
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: thinkrail-${{ matrix.number }}-playwright
+          path: playwright-report/
+          retention-days: 3
