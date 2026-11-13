@@ -117,6 +117,9 @@ re-anchoring, and package rendering.
 
 ## Re-anchoring (the file changed under a comment)
 
+Text-quote context includes the adjacent line separators even when the only preceding or following
+line is empty, so a boundary match can be distinguished from the same text inside another line.
+
 Recomputed on every snapshot read and before any send (`reanchorWorkspace`), against the worktree:
 1. `contentHash` (sha-256 of the file's bytes) unchanged → `anchored`.
 2. Else search `textQuote.exact` (disambiguated by prefix/suffix) → exactly one match → update

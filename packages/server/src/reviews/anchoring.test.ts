@@ -30,6 +30,39 @@ test("buildTextQuote captures the exact lines + bounded context", () => {
 	expect(quote.suffix.startsWith("\nconst d = 4;")).toBe(true);
 });
 
+test.each([
+	{ content: "\nneedle", line: 2, prefix: "\n", suffix: "" },
+	{ content: "needle\n", line: 1, prefix: "", suffix: "\n" },
+	{ content: "\nneedle\n", line: 2, prefix: "\n", suffix: "\n" },
+])("buildTextQuote preserves empty adjacent lines: %j", ({ content, line, prefix, suffix }) => {
+	expect(buildTextQuote(content, line, line)).toEqual({
+		kind: "textQuote",
+		exact: "needle",
+		prefix,
+		suffix,
+	});
+});
+
+test.each([
+	{ content: "\nneedle", line: 2, edited: "decoyneedle\nheader\nneedle" },
+	{ content: "needle\n", line: 1, edited: "needleSuffix\nheader\nneedle\n" },
+])("blank-line context disambiguates a moved quote: %j", ({ content, line, edited }) => {
+	const result = reanchor(anchorFor(content, line, line), edited);
+	expect(result.state).toBe("moved");
+	expect(lineRangeOf(result.anchor)).toEqual({ kind: "lineRange", startLine: 3, endLine: 3 });
+});
+
+test("blank-line context leaves identical line matches outdated", () => {
+	const anchor = anchorFor("needle\n", 1, 1);
+	expect(reanchor(anchor, "needle\nneedle\n").state).toBe("outdated");
+	expect(buildTextQuote("needle", 1, 1)).toEqual({
+		kind: "textQuote",
+		exact: "needle",
+		prefix: "",
+		suffix: "",
+	});
+});
+
 test("unchanged content stays anchored", () => {
 	const anchor = anchorFor(CONTENT, 2, 2);
 	const result = reanchor(anchor, CONTENT);
