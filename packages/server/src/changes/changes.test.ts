@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import {
 	chmodSync,
@@ -394,6 +395,49 @@ test("symbolic links on either side are unsupported", async () => {
 		),
 	).rejects.toMatchObject({ code: "UNSUPPORTED_CHANGE" });
 });
+
+for (const undo of [false, true]) {
+	(process.platform === "win32" ? test.skip : test)(
+		`change mutations refuse a FIFO without waiting for a writer (undo=${undo})`,
+		() => {
+			write("a.ts", "changed\n");
+			const source = `
+			import { rmSync } from "node:fs";
+			import { spawnSync } from "node:child_process";
+			import { revertChange, undoChange } from ${JSON.stringify(new URL("./changes.ts", import.meta.url).href)};
+			const params = ${JSON.stringify({
+				workspaceId,
+				path: "a.ts",
+				scope: UNCOMMITTED,
+				target: { kind: "file" },
+				expect: { originalHash: hash("one\ntwo\nthree\n"), modifiedHash: hash("changed\n") },
+			})};
+			const receipt = ${undo} ? await revertChange(params) : null;
+			const path = ${JSON.stringify(join(repo, "a.ts"))};
+			rmSync(path);
+			if (spawnSync("mkfifo", [path]).status !== 0) throw new Error("mkfifo failed");
+			try {
+				if (receipt) await undoChange({ workspaceId: params.workspaceId, receiptId: receipt.id,
+					expect: { modifiedHash: params.expect.originalHash } });
+				else await revertChange(params);
+				process.exitCode = 1;
+			} catch (error) {
+				console.log(JSON.stringify({ code: error.code, message: error.message }));
+			}
+			`;
+			const child = spawnSync(process.execPath, ["--eval", source], {
+				encoding: "utf8",
+				timeout: 3000,
+				killSignal: "SIGKILL",
+				env: process.env,
+			});
+			expect(child.error).toBeUndefined();
+			expect(child.status).toBe(0);
+			expect(JSON.parse(child.stdout)).toMatchObject({ code: "UNSUPPORTED_CHANGE" });
+			expect(statSync(join(repo, "a.ts")).isFIFO()).toBe(true);
+		},
+	);
+}
 
 test("a whole-file revert of an added or untracked file moves it to the trash", async () => {
 	write("untracked.txt", "fresh\n");

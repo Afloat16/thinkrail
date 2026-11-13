@@ -1,6 +1,8 @@
 import {
 	closeSync,
+	constants,
 	type Dirent,
+	fstatSync,
 	openSync,
 	readdirSync,
 	readFileSync,
@@ -124,11 +126,33 @@ export function readDir(workspaceId: string, path: string): FileNode[] {
 
 const BOUNDED_READ_CHUNK = 64 * 1024;
 
+function openRegularFile(abs: string): number {
+	// A FIFO's ordinary read-only open waits for a writer before fstat can run.
+	// Non-blocking mode is ignored for regular files and lets us reject the rest.
+	const fd = openSync(abs, constants.O_RDONLY | constants.O_NONBLOCK);
+	try {
+		if (!fstatSync(fd).isFile()) throw new Error("The path is not a regular file");
+		return fd;
+	} catch (error) {
+		closeSync(fd);
+		throw error;
+	}
+}
+
+function readRegularFile(abs: string): Uint8Array {
+	const fd = openRegularFile(abs);
+	try {
+		return readFileSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+}
+
 function readBounded(abs: string, maxBytes: number): Uint8Array {
 	if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
 		throw new Error("maxBytes must be a non-negative integer");
 	}
-	const fd = openSync(abs, "r");
+	const fd = openRegularFile(abs);
 	try {
 		const chunks: Buffer[] = [];
 		let total = 0;
@@ -155,7 +179,7 @@ export function readFile(
 ): { content: string; meta: ResourceMeta } {
 	const { abs } = resolveInWorktree(workspaceId, path, true);
 	const bytes =
-		options.maxBytes === undefined ? readFileSync(abs) : readBounded(abs, options.maxBytes);
+		options.maxBytes === undefined ? readRegularFile(abs) : readBounded(abs, options.maxBytes);
 	const meta = resourceMeta(bytes, path);
 	return { content: meta.text ? decodeText(bytes) : "", meta };
 }

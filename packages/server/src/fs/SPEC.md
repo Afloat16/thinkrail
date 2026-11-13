@@ -29,7 +29,9 @@ classification every content read in the host shares. Agent and review writes ar
   at most `maxBytes + 1` bytes in all, refusing a larger file with `CodedError("FILE_TOO_LARGE")` before
   classifying — whatever the file grows to meanwhile, and without allocating the cap up front (`maxBytes`
   must be a non-negative integer), so `content` is `""` for a byte-only resource and the client fetches
-  those bytes over the host's `/files` route instead of receiving mojibake.
+  those bytes over the host's `/files` route instead of receiving mojibake. Both bounded and unbounded
+  reads accept only regular files (including contained symlinks to regular files). Opening a FIFO
+  must not wait for a writer and block the host; validate the opened descriptor before reading it.
   **`resolveWorktreeFile(workspaceId, path)`** returns the
   contained absolute path for the host to stream a file's raw bytes over HTTP (the `/files/…` route
   serving relative images in the markdown viewer, the `/blob` route's containment check) and for the

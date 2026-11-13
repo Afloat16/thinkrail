@@ -76,6 +76,8 @@ The platform decision behind it is [[architecture]] decision #19; the rules belo
   is what the two sides of each path actually say.
 - **Symlinks and mode-only changes are refused as `UNSUPPORTED_CHANGE`.** Worktree identity is read with
   `lstat`, and the original tree mode comes from `git ls-tree`; a symlink on either side is never followed.
+  Non-regular worktree entries are refused too. Reads open without waiting for a FIFO writer and check
+  the opened descriptor before reading, so replacing a regular file with a pipe cannot block a mutation.
   Equal bytes with a different mode are not a content revert and are refused. A whole-file restore
   applies the original Git mode (`100755` maps to executable permissions); a range keeps the worktree mode.
 - **Writes are atomic**: a temp file in the same directory, the selected mode applied, then `rename`.

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -49,6 +50,41 @@ test("workspaceRelativePath rejects a path outside the worktree", () => {
 });
 
 const symlinkTest = process.platform === "win32" ? test.skip : test;
+
+for (const bounded of [false, true]) {
+	for (const throughLink of [false, true]) {
+		symlinkTest(
+			`readFile refuses a FIFO without waiting for a writer (bounded=${bounded}, link=${throughLink})`,
+			() => {
+				const fifo = join(root, "pipe");
+				const created = spawnSync("mkfifo", [fifo], { encoding: "utf8" });
+				expect(created.status).toBe(0);
+				if (throughLink) symlinkSync(fifo, join(root, "pipe-link"));
+				const path = throughLink ? "pipe-link" : "pipe";
+				const options = bounded ? { maxBytes: 1024 } : {};
+				const source = `
+				import { readFile } from ${JSON.stringify(new URL("./files.ts", import.meta.url).href)};
+				try {
+					readFile("w1", ${JSON.stringify(path)}, ${JSON.stringify(options)});
+					process.exitCode = 1;
+				} catch (error) {
+					console.log(error.message);
+				}
+			`;
+				// A blocked synchronous open must never hang the test runner itself.
+				const child = spawnSync(process.execPath, ["--eval", source], {
+					encoding: "utf8",
+					timeout: 3000,
+					killSignal: "SIGKILL",
+					env: process.env,
+				});
+				expect(child.error).toBeUndefined();
+				expect(child.status).toBe(0);
+				expect(child.stdout.trim()).toBe("The path is not a regular file");
+			},
+		);
+	}
+}
 
 symlinkTest("readDir classifies symlinks by target and refuses escaping ones", () => {
 	mkdirSync(join(root, "real"));
