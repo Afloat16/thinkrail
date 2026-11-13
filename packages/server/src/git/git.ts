@@ -281,13 +281,18 @@ const TOP_LEVEL_ARGS = ["rev-parse", "--show-toplevel"];
 const READ_BRANCH = "read the current branch";
 
 function detachedAtTopLevel(repoPath: string, topLevel: GitResult): "HEAD" | null {
-	return topLevel.ok && canonicalPath(topLevel.out) === canonicalPath(repoPath) ? "HEAD" : null;
+	return topLevel.ok && canonicalPath(topLevel.out.replace(/\n$/, "")) === canonicalPath(repoPath)
+		? "HEAD"
+		: null;
 }
 
 export function tryCurrentBranch(repoPath: string): string | null {
 	const head = git(repoPath, HEAD_BRANCH_ARGS, { action: READ_BRANCH });
 	if (head.ok && head.out) return head.out;
-	return detachedAtTopLevel(repoPath, git(repoPath, TOP_LEVEL_ARGS, { action: READ_BRANCH }));
+	return detachedAtTopLevel(
+		repoPath,
+		git(repoPath, TOP_LEVEL_ARGS, { action: READ_BRANCH, raw: true }),
+	);
 }
 
 export function currentBranch(repoPath: string): string {
@@ -297,7 +302,10 @@ export function currentBranch(repoPath: string): string {
 async function currentBranchAsync(repoPath: string): Promise<string> {
 	const head = throwOnTimeout(await gitAsync(repoPath, HEAD_BRANCH_ARGS), READ_BRANCH);
 	if (head.ok && head.out) return head.out;
-	const topLevel = throwOnTimeout(await gitAsync(repoPath, TOP_LEVEL_ARGS), READ_BRANCH);
+	const topLevel = throwOnTimeout(
+		await gitAsync(repoPath, TOP_LEVEL_ARGS, { raw: true }),
+		READ_BRANCH,
+	);
 	return detachedAtTopLevel(repoPath, topLevel) ?? "HEAD";
 }
 

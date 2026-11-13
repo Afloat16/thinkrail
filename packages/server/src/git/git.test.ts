@@ -4,6 +4,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	renameSync,
 	rmSync,
 	truncateSync,
 	writeFileSync,
@@ -294,6 +295,20 @@ test("tryCurrentBranch distinguishes a detached checkout from an invalid workspa
 	expect(tryCurrentBranch(nested)).toBeNull();
 	expect(tryCurrentBranch(join(dataDir, "missing"))).toBeNull();
 });
+
+posix.each([" ", "\t", "\n", "\r"])(
+	"tryCurrentBranch preserves trailing root whitespace %j for detached checkouts",
+	(suffix) => {
+		const original = repo;
+		repo += suffix;
+		renameSync(original, repo);
+		git(repo, "checkout", "--detach", "HEAD");
+		expect(tryCurrentBranch(repo)).toBe("HEAD");
+		const nested = join(repo, "nested");
+		mkdirSync(nested);
+		expect(tryCurrentBranch(nested)).toBeNull();
+	},
+);
 
 test("listBranches surfaces origin branches and the origin default", async () => {
 	const remoteRepo = join(dataDir, "remote.git");

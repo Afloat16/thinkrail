@@ -59,10 +59,11 @@ export function resolveProjectPath(path: string): string {
 function gitToplevel(path: string): string | null {
 	const result = git(path, ["rev-parse", "--show-toplevel"], {
 		action: "read the repository root",
+		raw: true,
 	});
 	if (!result.ok && /dubious ownership/i.test(result.err))
 		throw new Error(`Git refused to open ${path}:\n${result.err}`);
-	return result.ok && result.out ? resolve(result.out) : null;
+	return result.ok && result.out ? resolve(result.out.replace(/\n$/, "")) : null;
 }
 
 function gitStepFailed(step: string, path: string, err: string): Error {

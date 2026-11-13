@@ -22,7 +22,8 @@ bootstrap it into one so it can be opened.
   path feeds `openProject`, `inspectProjectPath`, `initProject`, and `createProject`, so their classifications and actions
   cannot disagree. It then validates a path is a repo (`git rev-parse --show-toplevel`; a non-repo rejects
   with the named `NOT_GIT` code), records the root in the host's resolved spelling (git prints `C:/…` on
-  Windows; architecture Decision 22), dedupes by root,
+  Windows; architecture Decision 22). The root probe removes only Git's final LF, preserving whitespace
+  that belongs to the directory name. It dedupes by root,
   and assigns a stable unique readable `slug`; `getProjects` returns all known records with slug backfill,
   `listProjects` returns open records in the user's order (`compareProjectRank`), and `listRecentProjects`
   returns open + closed records by `lastOpened`, synchronously dropping only *closed* records whose folder the last completed check
