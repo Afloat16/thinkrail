@@ -153,14 +153,29 @@ export function buildTextQuote(content: string, startLine: number, endLine: numb
 	};
 }
 
-function indicesOf(haystack: string, needle: string): number[] {
-	if (needle.length === 0) return [];
-	const out: number[] = [];
+function uniqueQuoteIndex(content: string, quote: TextQuote): number | undefined {
+	if (quote.exact.length === 0) return undefined;
+	const hasContext = quote.prefix.length > 0 || quote.suffix.length > 0;
+	let firstMatch: number | undefined;
+	let multipleMatches = false;
+	let contextualMatch: number | undefined;
 	let from = 0;
 	for (;;) {
-		const at = haystack.indexOf(needle, from);
-		if (at < 0) return out;
-		out.push(at);
+		const at = content.indexOf(quote.exact, from);
+		if (at < 0) return multipleMatches ? contextualMatch : firstMatch;
+		if (firstMatch === undefined) firstMatch = at;
+		else {
+			multipleMatches = true;
+			if (!hasContext) return undefined;
+		}
+		if (
+			hasContext &&
+			content.endsWith(quote.prefix, at) &&
+			content.startsWith(quote.suffix, at + quote.exact.length)
+		) {
+			if (contextualMatch !== undefined) return undefined;
+			contextualMatch = at;
+		}
 		from = at + 1;
 	}
 }
@@ -194,19 +209,8 @@ export function reanchor(
 	const quote = textQuoteOf(anchor);
 	if (!quote) return driftWithoutQuote(anchor, hash);
 
-	let matches = indicesOf(content, quote.exact);
-	if (matches.length > 1 && (quote.prefix || quote.suffix)) {
-		const disambiguated = matches.filter((at) => {
-			const prefixOk = quote.prefix ? content.slice(0, at).endsWith(quote.prefix) : true;
-			const suffixOk = quote.suffix
-				? content.slice(at + quote.exact.length).startsWith(quote.suffix)
-				: true;
-			return prefixOk && suffixOk;
-		});
-		if (disambiguated.length > 0) matches = disambiguated;
-	}
-	const at = matches.length === 1 ? matches[0] : undefined;
-	if (at === undefined || quote.exact.length === 0) return { state: "outdated", anchor };
+	const at = uniqueQuoteIndex(content, quote);
+	if (at === undefined) return { state: "outdated", anchor };
 
 	const startLine = lineAt(content, at);
 	const endLine = startLine + (quote.exact.split("\n").length - 1);

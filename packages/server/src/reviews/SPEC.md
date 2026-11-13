@@ -123,6 +123,8 @@ Recomputed on every snapshot read and before any send (`reanchorWorkspace`), aga
    `lineRange`, state `moved` (silent re-pin). **`moved` is sticky**: the re-pin refreshes the
    anchor's `contentHash`, so the very next pass would otherwise see a hash match and silently
    downgrade it to `anchored` — losing the "drifted since creation" fact the state records.
+   The search retains only enough candidate positions to decide uniqueness, including overlapping
+   matches. Two context-matching occurrences already prove ambiguity; later occurrences cannot undo it.
 3. No/ambiguous match or file gone → `outdated`; the comment keeps its creation-time snapshot
    (`textQuote.exact`) so it stays meaningful and sendable (the package marks it outdated).
 4. **No `textQuote` to search at all** (a byte-only resource, or a renderer that anchored without text):
