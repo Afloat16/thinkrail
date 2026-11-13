@@ -5,6 +5,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	rmSync,
+	symlinkSync,
 	truncateSync,
 	writeFileSync,
 } from "node:fs";
@@ -228,6 +229,46 @@ test("gitStatus stops counting untracked lines once the read budget is spent", a
 	const last = changes.find((c) => c.path === "z.txt");
 	expect(last).toMatchObject({ status: "untracked" });
 	expect(last?.added).toBeUndefined();
+});
+
+posix("gitStatus keeps symlinks visible without counting their targets", async () => {
+	seedWorkspace();
+	const outside = join(dataDir, "outside.txt");
+	writeFileSync(outside, "outside\ncontent\nthree\n");
+	writeFileSync(join(repo, "inside.txt"), "inside\ncontent\n");
+	symlinkSync(outside, join(repo, "outside-link"));
+	symlinkSync("inside.txt", join(repo, "inside-link"));
+	symlinkSync("missing.txt", join(repo, "missing-link"));
+	symlinkSync(dataDir, join(repo, "directory-link"));
+
+	const { changes } = await gitStatus("w1");
+	for (const path of ["outside-link", "inside-link", "missing-link", "directory-link"]) {
+		expect(changes.find((change) => change.path === path)).toEqual({
+			path,
+			status: "untracked",
+		});
+	}
+	expect(changes.find((change) => change.path === "inside.txt")).toMatchObject({
+		added: 2,
+		removed: 0,
+	});
+});
+
+posix("gitStatus does not charge symlink targets against the untracked read budget", async () => {
+	seedWorkspace();
+	const target = join(dataDir, "target.txt");
+	writeFileSync(target, "x".repeat(2 * 1024 * 1024));
+	for (let i = 0; i < 16; i += 1) {
+		symlinkSync(target, join(repo, `link-${String(i).padStart(2, "0")}`));
+	}
+	writeFileSync(join(repo, "z.txt"), "one\ntwo\n");
+
+	const { changes } = await gitStatus("w1");
+	expect(changes.find((change) => change.path === "z.txt")).toMatchObject({
+		status: "untracked",
+		added: 2,
+		removed: 0,
+	});
 });
 
 test("gitStatus uses ResourceMeta text classification for untracked counts", async () => {

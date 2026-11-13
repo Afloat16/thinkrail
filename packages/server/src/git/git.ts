@@ -1,5 +1,5 @@
 import { readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { readFile, stat } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import type {
 	BranchList,
@@ -394,7 +394,9 @@ async function untrackedLineCounts(
 	for (const path of paths) {
 		try {
 			const abs = resolve(worktreePath, path);
-			const { size } = await stat(abs);
+			const entry = await lstat(abs);
+			if (!entry.isFile()) continue;
+			const { size } = entry;
 			if (size > UNTRACKED_COUNT_MAX_BYTES || size > budget) continue;
 			budget -= size;
 			const bytes = await readFile(abs);
