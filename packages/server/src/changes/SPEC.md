@@ -47,6 +47,8 @@ The platform decision behind it is [[architecture]] decision #19; the rules belo
   before `start`, which is what makes "delete the lines the change added" and "restore the lines it
   removed" the same operation in both directions. Spans are validated against *these* reads
   (`RANGE_INVALID`), never trusted.
+  Splicing a valid range does not turn its lines into function arguments, so a large hunk is not
+  limited by the JavaScript runtime's argument-count ceiling.
 - **Range reverts are text-only and never change a file's existence.** A byte-only side, or a worktree
   file that is absent, is `RANGE_INVALID` — the whole-file revert is the operation for those.
 - **The line model is jsdiff's:** only `\n` terminates a line, a preceding `\r` remains part of that

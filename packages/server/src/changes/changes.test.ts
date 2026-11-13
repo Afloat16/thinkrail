@@ -162,6 +162,33 @@ test("a range revert restores the original lines and leaves the rest of the work
 	expect(receipt.trashed).toBeUndefined();
 });
 
+test.each([
+	{ eol: "\n", replacement: "changed\n", count: 1 },
+	{ eol: "\r\n", replacement: "", count: 0 },
+])("a large range reverts and remains undoable: %j", async ({ eol, replacement, count }) => {
+	const lines = 1_000_000;
+	const restored = `original${eol}`.repeat(lines);
+	const original = `header${eol}${restored}footer${eol}`;
+	write("large.txt", original);
+	commitAll("large original");
+	const modified = `header edit${eol}${replacement}footer edit${eol}`;
+	write("large.txt", modified);
+	const expected = `header edit${eol}${restored}footer edit${eol}`;
+	const receipt = await revert(
+		"large.txt",
+		range({ start: 2, count: lines }, { start: 2, count }),
+		{ originalHash: hash(original), modifiedHash: hash(modified) },
+	);
+	expect(text("large.txt")).toBe(expected);
+	expect(receipt.after.hash).toBe(hash(expected));
+	await undoChange({
+		workspaceId,
+		receiptId: receipt.id,
+		expect: { modifiedHash: hash(expected) },
+	});
+	expect(text("large.txt")).toBe(modified);
+});
+
 test("an insertion-point span deletes added lines one way and restores deleted lines the other", async () => {
 	write("a.ts", "one\ninserted\ntwo\nthree\n");
 	await revert("a.ts", range({ start: 2, count: 0 }, { start: 2, count: 1 }), {
