@@ -53,11 +53,22 @@ function unquotedCount(line: string, delimiter: CsvDelimiter): number {
 const SNIFF_RECORDS = 20;
 
 function sampleRecords(text: string): string[] {
-	return text
-		.replace(/^\uFEFF/, "")
-		.split(/\r?\n/)
-		.filter((line) => line.trim() !== "")
-		.slice(0, SNIFF_RECORDS);
+	const records: string[] = [];
+	let start = text.startsWith("\uFEFF") ? 1 : 0;
+	let inQuotes = false;
+	for (let index = start; index < text.length; index += 1) {
+		const char = text[index];
+		if (char === '"') inQuotes = !inQuotes;
+		if (inQuotes || (char !== "\r" && char !== "\n")) continue;
+		const record = text.slice(start, index);
+		if (record.trim() !== "") records.push(record);
+		if (records.length === SNIFF_RECORDS) return records;
+		if (char === "\r" && text[index + 1] === "\n") index += 1;
+		start = index + 1;
+	}
+	const last = text.slice(start);
+	if (last.trim() !== "") records.push(last);
+	return records;
 }
 
 function consistentFieldCount(records: readonly string[], delimiter: CsvDelimiter): number | null {
