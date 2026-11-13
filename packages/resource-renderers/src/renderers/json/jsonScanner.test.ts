@@ -49,6 +49,38 @@ test("duplicate keys resolve to the last source node", () => {
 	expect(document?.nodes.get("/same/value")?.value).toBe(2);
 });
 
+test("replacing duplicate subtrees removes only their own indexed descendants", () => {
+	const source = [
+		"{",
+		'"a": {"old": [{"gone": 1}]},',
+		'"a/b": {"kept": true},',
+		'"a~b": [2],',
+		'"a": {"new": 3}',
+		"}",
+	].join("\n");
+	const document = scanJson(source);
+	expect(document?.value).toEqual(JSON.parse(source));
+	expect([...(document?.nodes.keys() ?? [])].sort()).toEqual([
+		"",
+		"/a",
+		"/a/new",
+		"/a~0b",
+		"/a~0b/0",
+		"/a~1b",
+		"/a~1b/kept",
+	]);
+	expect(document?.root.children.map((child) => child.key)).toEqual(["a", "a/b", "a~b"]);
+	expect(document?.nodes.get("/a")).toMatchObject({ startLine: 5, endLine: 5 });
+});
+
+test("replacing a parent also clears descendants of earlier nested duplicates", () => {
+	const source = '{"a":{"x":{"gone":1},"x":[2,3]},"b":{"keep":4},"a":false}';
+	const document = scanJson(source);
+	expect(document?.value).toEqual(JSON.parse(source));
+	expect([...(document?.nodes.keys() ?? [])].sort()).toEqual(["", "/a", "/b", "/b/keep"]);
+	expect(document?.root.children.map((child) => child.key)).toEqual(["a", "b"]);
+});
+
 test("a JSON node selection round-trips and is unplaced after destructive editing", () => {
 	const original = scanJson('{\n  "a": {\n    "b": 1\n  }\n}');
 	const node = original?.nodes.get("/a/b");

@@ -156,6 +156,11 @@ class JsonScanner {
 		throw new Error("Expected JSON value");
 	}
 
+	private removeSubtree(node: JsonNode): void {
+		this.nodes.delete(node.pointer);
+		for (const child of node.children) this.removeSubtree(child);
+	}
+
 	private parseObject(pointer: string): ParsedValue {
 		this.index += 1;
 		const value: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
@@ -175,11 +180,8 @@ class JsonScanner {
 			const childPointer = `${pointer}/${escapePointerSegment(key.value)}`;
 			const duplicateIndex = childIndex.get(key.value);
 			if (duplicateIndex !== undefined) {
-				for (const storedPointer of [...this.nodes.keys()]) {
-					if (storedPointer === childPointer || storedPointer.startsWith(`${childPointer}/`)) {
-						this.nodes.delete(storedPointer);
-					}
-				}
+				const previous = children[duplicateIndex];
+				if (previous) this.removeSubtree(previous);
 			}
 			const child = this.parseNode(childPointer, key.value, key.start);
 			value[key.value] = child.value;
