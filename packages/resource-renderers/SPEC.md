@@ -437,7 +437,9 @@ its mandatory `lineRange` plus `structural { scheme: "json-pointer", ref }`; a p
 or one now naming a node outside the host-reanchored line range, is reported unplaced. The collapsible
 unified diff comes from a `jsondiffpatch` instance with move detection
 and stable object hashes, tinting added/removed/changed/moved nodes and showing primitive replacements as
-old → new. A branch whose subtree holds changes carries a dot, and every changed or change-holding row
+old → new. Hashes keep string and numeric `id`, `key` and `name` identities distinct when matching array
+objects, so a move cannot attach a base review to another object whose identifier only has the same
+printed form. A branch whose subtree holds changes carries a dot, and every changed or change-holding row
 shows a hover tooltip naming its own change and listing the leaf changes beneath it (accessor-style
 relative path, kind, value or old → new — a replacement drops the redundant "Changed" word; capped at
 eight, then "…and N more"). Classification walks base and rendered paths together, so a removal keeps

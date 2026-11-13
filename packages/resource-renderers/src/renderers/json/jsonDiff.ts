@@ -45,7 +45,8 @@ function stableValue(value: unknown): string {
 export function stableObjectHash(item: object): string {
 	for (const key of ["id", "key", "name"]) {
 		const value = Reflect.get(item, key);
-		if (typeof value === "string" || typeof value === "number") return `${key}:${value}`;
+		if (typeof value === "string" || typeof value === "number")
+			return `${key}:${typeof value}:${value}`;
 	}
 	return stableValue(item);
 }

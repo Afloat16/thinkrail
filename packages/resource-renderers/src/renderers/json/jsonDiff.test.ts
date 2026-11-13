@@ -50,9 +50,57 @@ test("JSON diff classification detects moves in arrays of stable objects", () =>
 		],
 	);
 	expect([...result.current.values()].some((mark) => mark.kind === "moved")).toBe(true);
-	expect(stableObjectHash({ id: "a", value: 1 })).toBe("id:a");
+	expect(stableObjectHash({ id: "a", value: 1 })).toBe("id:string:a");
 	expect(stableObjectHash({ z: 1, a: 2 })).toBe('{"a":2,"z":1}');
 });
+
+test.each(["id", "key", "name"])(
+	"array moves and review threads distinguish numeric and string %s identities",
+	(key) => {
+		const values = [
+			{ [key]: 1, payload: "number" },
+			{ [key]: "1", payload: "string" },
+		];
+		const original = scanJson(JSON.stringify(values));
+		const modified = scanJson(JSON.stringify([...values].reverse()));
+		if (!original || !modified) throw new Error("Expected valid JSON fixtures");
+		const classification = classifyJsonDiff(original.value, modified.value);
+		const pointers = oldToRenderedJsonPointers(
+			original.value,
+			modified.value,
+			classification.delta,
+		);
+		expect(pointers.get("/0/payload")).toBe("/1/payload");
+		expect(pointers.get("/1/payload")).toBe("/0/payload");
+		expect([...classification.current.values()].some((mark) => mark.kind === "moved")).toBe(true);
+		const layout = buildJsonDiffReviewLayout({
+			originalPresent: true,
+			modifiedPresent: true,
+			originalDocument: original,
+			modifiedDocument: modified,
+			classification,
+			baseThreads: [thread("numeric", "/0/payload"), thread("string", "/1/payload")],
+			worktreeThreads: [],
+		});
+		expect(layout.placements.map((placement) => [placement.thread.id, placement.pointer])).toEqual([
+			["numeric", "/1/payload"],
+			["string", "/0/payload"],
+		]);
+	},
+);
+
+test.each(["id", "key", "name"])(
+	"replacing a numeric %s with a string identity does not retain the deleted item's pointer",
+	(key) => {
+		const original = [{ [key]: 1 }];
+		const modified = [{ [key]: "1" }];
+		const classification = classifyJsonDiff(original, modified);
+		expect(classification.removed.has("/0")).toBe(true);
+		expect(oldToRenderedJsonPointers(original, modified, classification.delta).has("/0")).toBe(
+			false,
+		);
+	},
+);
 
 test("array insertions shift base pointers to the rendered node", () => {
 	const original = scanJson('[{"id":"a"},{"id":"b"}]');
