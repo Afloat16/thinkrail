@@ -77,6 +77,8 @@ never quarantined. Where MDM or Defender blocks them anyway, the engine reports 
   - Resumes `${dest}.partial` with `Range: bytes=<n>-` and re-hashes the kept prefix. A `200` reply
     restarts from zero.
   - The file reaches `dest` only when size and SHA-256 match.
+  - Each network chunk is written completely before progress advances. A short disk write must never
+    publish a truncated artifact as verified; a write failure leaves the prefix available for a retry.
   - A network failure keeps the partial for the next attempt (`SPEECH_DOWNLOAD_FAILED`). A mismatch, or a
     body longer than pinned, deletes it (`SPEECH_CHECKSUM_MISMATCH`).
 - **Outcomes.**

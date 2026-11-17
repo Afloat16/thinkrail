@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodedError } from "@thinkrail/shared/codedError";
@@ -40,6 +40,54 @@ test("a verified download lands at its destination with progress", async () => {
 	expect(existsSync(`${dest}.partial`)).toBe(false);
 	expect(progress.at(-1)).toBe(body.length);
 });
+
+test.skipIf(process.platform !== "linux")(
+	"a short disk write never publishes a truncated model and the saved prefix can resume",
+	async () => {
+		const dest = join(dir, "model.gguf");
+		const shortBody = body.subarray(0, 8192);
+		files.set("/model.gguf", { body: shortBody });
+		const pin = { ...artifact(), bytes: shortBody.length, sha256: sha256(shortBody) };
+		const child = Bun.spawn(
+			[
+				"/bin/sh",
+				"-c",
+				'trap "" XFSZ; ulimit -f 8; exec "$@"',
+				"sh",
+				process.execPath,
+				"-e",
+				`
+import { downloadVerified } from ${JSON.stringify(join(import.meta.dir, "download.ts"))};
+const body = new Uint8Array(Array.from({ length: ${shortBody.length} }, (_, i) => i % 251));
+try {
+	await downloadVerified(${JSON.stringify(pin)}, ${JSON.stringify(dest)}, {
+		signal: new AbortController().signal,
+		onProgress: () => {},
+		fetchImpl: async () => new Response(body),
+	});
+	console.log(JSON.stringify({ code: null }));
+} catch (error) {
+	console.log(JSON.stringify({ code: error.code }));
+}
+`,
+			],
+			{ stdout: "pipe", stderr: "pipe" },
+		);
+		const [out, err, exit] = await Promise.all([
+			new Response(child.stdout).text(),
+			new Response(child.stderr).text(),
+			child.exited,
+		]);
+		expect(exit).toBe(0);
+		expect(err).toBe("");
+		expect(JSON.parse(out)).toEqual({ code: "EFBIG" });
+		expect(existsSync(dest)).toBe(false);
+		expect(statSync(`${dest}.partial`).size).toBe(4096);
+		await downloadVerified(pin, dest, opts());
+		expect(readFileSync(dest)).toEqual(Buffer.from(shortBody));
+		expect(server.requests.at(-1)?.range).toBe("bytes=4096-");
+	},
+);
 
 test("an interrupted download keeps its partial and resumes with a range", async () => {
 	const dest = join(dir, "model.gguf");

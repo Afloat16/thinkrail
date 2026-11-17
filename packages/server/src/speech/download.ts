@@ -73,7 +73,7 @@ export async function downloadVerified(
 					throw new CodedError("SPEECH_CHECKSUM_MISMATCH", "download is larger than pinned");
 				}
 				hasher.update(chunk.value);
-				await handle.write(chunk.value);
+				await handle.writeFile(chunk.value);
 				opts.onProgress(received);
 			}
 		}
