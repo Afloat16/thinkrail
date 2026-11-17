@@ -12,29 +12,42 @@ import type {
 	WsChannel,
 } from "@thinkrail/contracts";
 import {
+	ARTIFACTS_PROTOCOL_VERSION,
+	CONTINUATION_PROTOCOL_VERSION,
 	FEEDBACK_SURVEY_PROTOCOL_VERSION,
 	FONTS_PROTOCOL_VERSION,
+	GITHUB_STAR_PROTOCOL_VERSION,
+	IMAGES_ROUTE,
 	LOCALES_PROTOCOL_VERSION,
 	MCP_PROTOCOL_VERSION,
 	PI_PACKAGES_PROTOCOL_VERSION,
 	PROTOCOL_VERSION,
+	SPEECH_PROTOCOL_VERSION,
+	SPEECH_SOCKET_ROUTE,
+	TEXT_SEARCH_PROTOCOL_VERSION,
 	USER_FONTS_ROUTE,
 	USER_THEMES_PROTOCOL_VERSION,
+	WORKSPACE_CREATION_PROTOCOL_VERSION,
+	WORKSPACE_VIEW_ROUTE,
 	WS_CHANNELS,
+	WS_MAX_FRAME_BYTES,
 } from "@thinkrail/contracts";
 import { errorCodeOf } from "@thinkrail/shared/codedError";
+import { WORKSPACE_CONTEXT_DIR } from "@thinkrail/shared/paths";
 import {
 	admissionContextFor,
 	bumpPackageSwitchGeneration,
 	cancelAllMcpProbes,
 	cancelMcpProbesOwnedBy,
 	disposeAllSessions,
+	getSessionAttribution,
 	getSessionWorkspaceId,
 	handlePiSettingsFileChanged,
 	handleProjectPiSettingsChanged,
 	initializeSessionStates,
 	isProjectSkillPath,
 	liveSessionIdsOf,
+	mayHoldProjectSkills,
 	mcpPolicyOf,
 	piTrustsProjectPath,
 	primeProjectPiSettings,
@@ -43,11 +56,15 @@ import {
 	reconcileMcpSessions,
 	refreshAgentReviewTool,
 	refreshExtensionTools,
+	refreshSkillAdmission,
 	refreshSubagentConcurrency,
 	refreshSubagentTools,
+	sessionImageSource,
 	setAgentReviewEnabledResolver,
+	setContinueToolHost,
 	setDisabledExtensionsResolver,
 	setDisabledPackagesResolver,
+	setExtensionSettingsResolver,
 	setExtUiPublisher,
 	setMcpLoginPublisher,
 	setMcpPolicyResolver,
@@ -65,10 +82,13 @@ import {
 	setSessionResourcesPublisher,
 	setSessionStatePublisher,
 	setSkillAdmissionResolver,
+	setSpecsEnabledResolver,
 	setSubagentConcurrencyResolver,
 	setSubagentsEnabledResolver,
 	setTitleToolHost,
+	settleCredentialWritesForShutdown,
 	settleSessionsForShutdown,
+	setWorkspaceToolsHost,
 	watchUserMcpConfig,
 } from "../agent";
 import {
@@ -81,6 +101,11 @@ import {
 	track,
 } from "../analytics";
 import {
+	noteArtifactPathsChanged,
+	observeArtifactSessionEvent,
+	setArtifactsPublisher,
+} from "../artifacts";
+import {
 	cancelAllLogins,
 	initializeJbcentralRuntime,
 	setJbcentralAppliedPublisher,
@@ -90,14 +115,18 @@ import {
 	stopJbcentralRuntime,
 } from "../auth";
 import { forgetOpenBranchReview } from "../branch-review";
+import { artifactTools } from "../extensions";
 import {
 	configureSurveySource,
 	redeliverInvitation,
 	refreshInAppSurvey,
 	releaseInvitation,
 	setFeedbackPublisher,
+	setGithubStarPublisher,
 } from "../feedback";
 import { watchUserFonts } from "../fonts";
+import { ignoredPaths } from "../git";
+import { forgetImageSession, resetImages, serveImage, setImageSource } from "../images";
 import { watchLocalLocales } from "../locales";
 import { logger, observeLoggedErrors } from "../log";
 import { loadWorkspaces } from "../persistence";
@@ -109,10 +138,20 @@ import {
 	openProject,
 	refreshRecentProjectFolders,
 	setPiTrustSeed,
+	setProjectPathGuard,
 	setProjectPublisher,
 } from "../projects";
 import { reanchorWorkspace, resolveCommentFromAgent, setReviewPublisher } from "../reviews";
 import { getConfig, setSettingsPublisher } from "../settings";
+import {
+	createSpeechRelay,
+	initSpeech,
+	type SpeechRelay,
+	setSpeechPublisher,
+	speechStatus,
+	stopEngine,
+	stopSpeechInstall,
+} from "../speech";
 import {
 	clearTerminalClient,
 	closeAllTerminals,
@@ -126,6 +165,8 @@ import { watchUserThemes } from "../themes";
 import { isTodoToolEnd, maybeAttachChangeArtifacts } from "../todos";
 import { setTurnPublisher, TurnTracker } from "../turns";
 import {
+	ensureWatch,
+	setIgnoredPathsResolver,
 	setRepoMetaPublisher,
 	setSkillPathClassifier,
 	setWatchPublisher,
@@ -133,17 +174,45 @@ import {
 	stopAllWatches,
 } from "../watch";
 import {
+	creationOwnsPath,
+	ensureChatsContainer,
 	getWorkspace,
+	interruptWorkspaceCreations,
+	isChatsContainer,
+	isChatsContainerId,
+	isChatWorkspaceId,
 	listAllWorkspaceRecords,
 	recordWorkspaceHead,
-	refreshUserOwnedWorkspace,
+	replayPendingHandoffs,
 	seedWorkspaceHead,
+	setChatPublishers,
+	setWorkspaceCreationHandoff,
+	setWorkspaceCreationPublisher,
 	setWorkspacePublisher,
+	stopWorkspaceCreations,
+	syncWorkspaceBranch,
+	type WorkspaceLifecycleEvent,
 } from "../workspaces";
-import { BLOB_PREFIX, FILES_PREFIX, serveBlob, serveWorktreeFile } from "./fileRoutes";
+import { createArtifactEventMapper } from "./artifactEvents";
+import { seesChats } from "./chats";
+import { continueToolHost, observeContinuation, setContinuationPublisher } from "./continuations";
+import {
+	BLOB_PREFIX,
+	FILES_PREFIX,
+	serveBlob,
+	serveWorktreeFile,
+	serveWorktreeView,
+} from "./fileRoutes";
 import { serveUserFonts } from "./fontRoutes";
 import { setFsNudgePublisher } from "./fsNudge";
-import { handleRequest, requestErrorReport, requestMethodDiagnostic } from "./handlers";
+import { applyGitCeiling } from "./gitCeiling";
+import {
+	handleRequest,
+	requestErrorReport,
+	requestMethodDiagnostic,
+	workspaceCreationHandoff,
+} from "./handlers";
+import { HeldSnapshots, terminalsMayResume } from "./heldSnapshots";
 import { provisionInitialTerminal } from "./initialTerminal";
 import { trackLoginOutcome } from "./loginAnalytics";
 import {
@@ -168,11 +237,13 @@ import {
 	setReviewFailedPublisher,
 } from "./requestReview";
 import { runObservation } from "./runAnalytics";
+import { hostSearch, setSearchTextPublisher } from "./search";
 import {
 	REVIEW_REFRESH_INTERVAL_MS,
 	refreshOpenProjectReviews,
 	stampSessionActivity,
 } from "./settledLifecycle";
+import { type SlowConsumerError, sendOrQuarantine, settleSlowConsumer } from "./socketSend";
 import { resolveSubagentMaxConcurrent, resolveSubagentsEnabled } from "./subagentPolicy";
 import { taskObservation } from "./taskAnalytics";
 import {
@@ -182,6 +253,7 @@ import {
 } from "./terminalSend";
 import { titleToolHost } from "./titleTool";
 import { markClientStale, reconcilePendingReviewsOnBoot } from "./todoReview";
+import { workspaceToolsHost } from "./workspaceTools";
 
 export interface CreateServerOptions {
 	port?: number;
@@ -213,6 +285,7 @@ export interface CreateServerOptions {
 		check(): Promise<HostUpdateNotice | null>;
 		run(): Promise<void>;
 	};
+	outboundBufferLimitBytes?: number;
 }
 
 export interface RunningServer {
@@ -225,14 +298,30 @@ export interface RunningServer {
 interface SocketData {
 	clientKey: string;
 	protocolVersion: number;
+	/** Present only on a `/speech` socket, which bypasses the JSON request wire entirely. */
+	speech?: SpeechRelay;
+	speechSocket?: true;
+	slowSince?: number;
+	held?: HeldSnapshots;
 }
 
 const CLIENT_REPLAY_RETENTION_MS = 60_000;
+const WS_OUTBOUND_BUFFER_LIMIT_BYTES = 256 * 1024 * 1024;
 const RECENT_FOLDER_CHECK_BUDGET_MS = 250;
 
 const log = logger("host");
 
 const isRequestId = (id: unknown): id is string => typeof id === "string";
+
+const artifactSessionEvent = createArtifactEventMapper(() => {
+	const disabled = new Set(getConfig().disabledExtensions);
+	return artifactTools((name) => disabled.has(name));
+});
+
+const onScratchDirPath = (path: string) =>
+	path === WORKSPACE_CONTEXT_DIR ||
+	WORKSPACE_CONTEXT_DIR.startsWith(`${path}/`) ||
+	path.startsWith(`${WORKSPACE_CONTEXT_DIR}/`);
 
 function formatReplayLoad(load: ReplayLoad): string {
 	const occupancy = ({ pending, settled, abandoned }: ReplayLoad[string]) =>
@@ -245,6 +334,9 @@ function formatReplayLoad(load: ReplayLoad): string {
 		)
 		.join(", ");
 }
+
+const warnSlowConsumer = (message: string, error: SlowConsumerError): void =>
+	log.warn(message, error);
 
 function countMethods(methods: readonly string[]): string {
 	const counts = new Map<string, number>();
@@ -270,6 +362,12 @@ function sameHostUpdateRelease(
 }
 
 export async function createServer(options: CreateServerOptions = {}): Promise<RunningServer> {
+	applyGitCeiling();
+	try {
+		ensureChatsContainer();
+	} catch (error) {
+		log.warn(`chats without a project are unavailable: ${String(error)}`);
+	}
 	await initializeJbcentralRuntime();
 	getConfig();
 	setPiTrustSeed(piTrustsProjectPath);
@@ -281,6 +379,7 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 		appVersion,
 		analytics,
 		hostUpdate,
+		outboundBufferLimitBytes = WS_OUTBOUND_BUFFER_LIMIT_BYTES,
 	} = options;
 
 	setSessionProjectResolver((workspaceId) => {
@@ -298,6 +397,7 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 		})),
 	);
 
+	setImageSource(sessionImageSource);
 	const sockets = new Map<string, Bun.ServerWebSocket<SocketData>>();
 	const reapTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	const requestReplays = new RequestReplayCache<string>();
@@ -342,6 +442,7 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 				clearTerminalClient(clientKey);
 				releaseInvitation(clientKey);
 				cancelMcpProbesOwnedBy(clientKey);
+				hostSearch().forgetClient(clientKey);
 			}, CLIENT_REPLAY_RETENTION_MS),
 		);
 	};
@@ -359,11 +460,26 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 					? undefined
 					: new Response("ws upgrade failed", { status: 400 });
 			}
+			if (url.pathname === SPEECH_SOCKET_ROUTE) {
+				const protocolVersion = clientProtocolVersion(url.searchParams.get("protocol"));
+				if (protocolVersion < SPEECH_PROTOCOL_VERSION) {
+					return new Response("speech needs a newer client", { status: 400 });
+				}
+				const clientKey = url.searchParams.get("client") ?? `anon-${randomUUID()}`;
+				return srv.upgrade(req, { data: { clientKey, protocolVersion, speechSocket: true } })
+					? undefined
+					: new Response("ws upgrade failed", { status: 400 });
+			}
 			if (url.pathname === "/health") {
 				return new Response("ok");
 			}
+			if (url.pathname.startsWith(IMAGES_ROUTE)) {
+				return req.method === "GET" || req.method === "HEAD"
+					? serveImage(url.pathname)
+					: new Response("method not allowed", { status: 405, headers: { Allow: "GET, HEAD" } });
+			}
 			if (url.pathname.startsWith(FILES_PREFIX)) {
-				return serveWorktreeFile(url.pathname);
+				return serveWorktreeFile(url.pathname, url.searchParams.get("maxBytes"));
 			}
 			if (url.pathname.startsWith(BLOB_PREFIX)) {
 				return serveBlob(url.pathname, req.signal);
@@ -371,15 +487,30 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 			if (url.pathname.startsWith(USER_FONTS_ROUTE)) {
 				return serveUserFonts(req, url.pathname);
 			}
+			if (url.pathname.startsWith(WORKSPACE_VIEW_ROUTE)) {
+				return serveWorktreeView(req.method, url);
+			}
 			if (staticDir) {
 				return serveStatic(url.pathname, staticDir);
 			}
 			return new Response("not found", { status: 404 });
 		},
 		websocket: {
+			maxPayloadLength: WS_MAX_FRAME_BYTES,
+			backpressureLimit: outboundBufferLimitBytes,
 			open(ws) {
+				if (ws.data.speechSocket) {
+					ws.data.speech = createSpeechRelay(ws);
+					return;
+				}
 				const replaced = sockets.get(ws.data.clientKey);
 				sockets.set(ws.data.clientKey, ws);
+				ws.data.held = new HeldSnapshots({
+					quarantined: () => ws.data.slowSince !== undefined,
+					getBufferedAmount: () => ws.getBufferedAmount(),
+					send: (frame) =>
+						sendOrQuarantine(ws, frame, `${WS_CHANNELS.piEvent} push`, warnSlowConsumer),
+				});
 				if (replaced && replaced !== ws) replaced.close();
 				terminalBackpressured.delete(ws.data.clientKey);
 				const pendingReap = reapTimers.get(ws.data.clientKey);
@@ -401,6 +532,13 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 				ws.subscribe(WS_CHANNELS.workspaceUpdated);
 				ws.subscribe(WS_CHANNELS.workspaceRemoved);
 				ws.subscribe(WS_CHANNELS.workspaceFsChanged);
+				ws.subscribe(WS_CHANNELS.workspaceArtifactsChanged);
+				if (ws.data.protocolVersion >= WORKSPACE_CREATION_PROTOCOL_VERSION) {
+					ws.subscribe(WS_CHANNELS.workspaceCreationChanged);
+					ws.subscribe(WS_CHANNELS.workspaceCreationRemoved);
+				}
+				if (ws.data.protocolVersion >= CONTINUATION_PROTOCOL_VERSION)
+					ws.subscribe(WS_CHANNELS.chatContinuation);
 				ws.subscribe(WS_CHANNELS.settingsChanged);
 				if (hostUpdate) ws.subscribe(WS_CHANNELS.hostUpdateAvailable);
 				ws.subscribe(WS_CHANNELS.reviewChanged);
@@ -415,22 +553,28 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 					ws.subscribe(WS_CHANNELS.packagesChanged);
 				if (ws.data.protocolVersion >= FONTS_PROTOCOL_VERSION)
 					ws.subscribe(WS_CHANNELS.fontsChanged);
+				const speech = ws.data.protocolVersion >= SPEECH_PROTOCOL_VERSION;
+				if (speech) ws.subscribe(WS_CHANNELS.speechChanged);
 				const hostPlatform: HostPlatform =
 					process.platform === "darwin" || process.platform === "win32"
 						? process.platform
 						: "linux";
 				const setupCapture = additionalCapture();
+				const chats = seesChats(ws.data.protocolVersion);
 				const welcome: ServerWelcome = {
 					protocolVersion: PROTOCOL_VERSION,
 					hostPlatform,
-					projects: listProjects(),
-					recentProjects: listRecentProjects(),
+					projects: listProjects().filter((project) => chats || !isChatsContainer(project)),
+					recentProjects: listRecentProjects().filter((project) => !isChatsContainer(project)),
 					config: getConfig(),
+					...(speech ? { speech: speechStatus() } : {}),
 					...(appVersion ? { appVersion } : {}),
 					...(hostUpdateNotice ? { hostUpdate: hostUpdateNotice } : {}),
 				};
 				setupObservation.observe(setupCapture, {
-					project_present: welcome.projects.length > 0 ? "yes" : "no",
+					project_present: welcome.projects.some((project) => !isChatsContainer(project))
+						? "yes"
+						: "no",
 				});
 				const welcomeStatus = ws.send(
 					JSON.stringify({ channel: WS_CHANNELS.serverWelcome, data: welcome }),
@@ -447,6 +591,10 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 				redeliverInvitation(ws.data.clientKey);
 			},
 			async message(ws, message) {
+				if (ws.data.speechSocket) {
+					ws.data.speech?.message(message);
+					return;
+				}
 				const raw = typeof message === "string" ? message : message.toString();
 				let req: unknown;
 				try {
@@ -510,7 +658,7 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 						},
 						methodDiagnostic,
 					);
-					if (ws.send(response) === 0) ws.close();
+					sendOrQuarantine(ws, response, `${methodDiagnostic} reply`, warnSlowConsumer);
 				} catch (err) {
 					const error = err instanceof Error ? err.message : String(err);
 					if (err instanceof RequestReplayOverflowError && err.load) {
@@ -524,20 +672,29 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 						error,
 						...(code ? { errorCode: code } : {}),
 					});
-					if (ws.send(reply) === 0) ws.close();
+					sendOrQuarantine(ws, reply, `${methodDiagnostic} reply`, warnSlowConsumer);
 				}
 			},
 			drain(ws) {
+				if (ws.data.speechSocket) return;
+				if (settleSlowConsumer(ws) !== "healthy") return;
 				if (sockets.get(ws.data.clientKey) !== ws) return;
+				if (!terminalsMayResume(ws.data.held?.drain())) return;
 				terminalBackpressured.delete(ws.data.clientKey);
 				resumeClientTerminals(ws.data.clientKey);
 			},
 			close(ws) {
+				if (ws.data.speechSocket) {
+					ws.data.speech?.close();
+					return;
+				}
+				ws.data.held?.clear();
 				const { clientKey } = ws.data;
 				if (stopping) return;
 				if (sockets.get(clientKey) === ws) {
 					sockets.delete(clientKey);
 					terminalBackpressured.delete(clientKey);
+					hostSearch().cancelText(clientKey);
 				}
 				if (sockets.has(clientKey) || reapTimers.has(clientKey)) return;
 				armClientReap(clientKey);
@@ -546,6 +703,10 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 	});
 
 	const backpressureReconciler = setInterval(() => {
+		for (const socket of sockets.values()) {
+			if (settleSlowConsumer(socket) === "healthy") socket.data.held?.drain();
+			else socket.data.held?.clear();
+		}
 		const drained = drainedClientKeys(terminalBackpressured, (clientKey) =>
 			sockets.get(clientKey)?.getBufferedAmount(),
 		);
@@ -558,13 +719,54 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 		}
 	}, BACKPRESSURE_RECONCILE_MS);
 
+	type PushSocket = Bun.ServerWebSocket<SocketData>;
+	const fanOut = (
+		channel: string,
+		admits: (socket: PushSocket) => boolean,
+		deliver: (socket: PushSocket) => void,
+	): void => {
+		for (const socket of sockets.values()) {
+			if (socket.isSubscribed(channel) && admits(socket)) deliver(socket);
+		}
+	};
+
+	const pushTo =
+		(channel: string, frame: string, afterSession?: string) =>
+		(socket: PushSocket): void => {
+			if (afterSession !== undefined && socket.data.held?.barrier(afterSession) === false) return;
+			sendOrQuarantine(socket, frame, `${channel} push`, warnSlowConsumer);
+		};
+
+	const admitsScope = (scope: {
+		workspaceId?: string;
+		projectId?: string;
+		belowProtocol?: number;
+	}): ((socket: PushSocket) => boolean) => {
+		const aboutChats =
+			(scope.workspaceId !== undefined && isChatWorkspaceId(scope.workspaceId)) ||
+			(scope.projectId !== undefined && isChatsContainerId(scope.projectId));
+		const floor = scope.belowProtocol ?? 0;
+		return ({ data: { protocolVersion } }) =>
+			protocolVersion >= floor && (!aboutChats || seesChats(protocolVersion));
+	};
+
+	const publishScoped = (
+		channel: string,
+		data: unknown,
+		scope: { workspaceId?: string; projectId?: string; belowProtocol?: number } = {},
+		afterSession?: string,
+	) => {
+		fanOut(
+			channel,
+			admitsScope(scope),
+			pushTo(channel, JSON.stringify({ channel, data }), afterSession),
+		);
+	};
+
 	const publishHostUpdate = (notice: HostUpdateNotice): void => {
 		if (!hostUpdateActive) return;
 		hostUpdateNotice = notice;
-		server.publish(
-			WS_CHANNELS.hostUpdateAvailable,
-			JSON.stringify({ channel: WS_CHANNELS.hostUpdateAvailable, data: notice }),
-		);
+		publishScoped(WS_CHANNELS.hostUpdateAvailable, notice);
 	};
 
 	const clearHostUpdateTimer = (): void => {
@@ -626,7 +828,7 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 	setTerminalPublisher((clientKey, channel, data) => {
 		if (terminalBackpressured.has(clientKey)) return "unavailable";
 		const ws = sockets.get(clientKey);
-		if (!ws) return "unavailable";
+		if (!ws || ws.data.slowSince !== undefined) return "unavailable";
 		try {
 			const delivery = terminalDeliveryForSendStatus(ws.send(JSON.stringify({ channel, data })));
 			if (delivery !== "delivered") terminalBackpressured.add(clientKey);
@@ -638,24 +840,57 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 		}
 	});
 
+	setSearchTextPublisher((clientKey, batch) => {
+		const ws = sockets.get(clientKey);
+		if (!ws || ws.data.protocolVersion < TEXT_SEARCH_PROTOCOL_VERSION) return;
+		sendOrQuarantine(
+			ws,
+			JSON.stringify({ channel: WS_CHANNELS.searchTextResults, data: batch }),
+			`${WS_CHANNELS.searchTextResults} push`,
+			warnSlowConsumer,
+		);
+	});
+
 	setFeedbackPublisher((clientKey) => {
 		const ws = sockets.get(clientKey);
 		if (!ws || ws.data.protocolVersion < FEEDBACK_SURVEY_PROTOCOL_VERSION) return false;
-		try {
-			return ws.send(JSON.stringify({ channel: WS_CHANNELS.feedbackInterview, data: {} })) !== 0;
-		} catch {
-			ws.close();
-			return false;
-		}
+		return (
+			sendOrQuarantine(
+				ws,
+				JSON.stringify({ channel: WS_CHANNELS.feedbackInterview, data: {} }),
+				`${WS_CHANNELS.feedbackInterview} push`,
+				warnSlowConsumer,
+			) !== "dropped"
+		);
+	});
+
+	const githubStarSocket = (clientKey: string) => {
+		const ws = sockets.get(clientKey);
+		return ws && ws.data.protocolVersion >= GITHUB_STAR_PROTOCOL_VERSION ? ws : undefined;
+	};
+	setGithubStarPublisher({
+		canAsk: (clientKey) => githubStarSocket(clientKey) !== undefined,
+		ask: (clientKey, ask) => {
+			const ws = githubStarSocket(clientKey);
+			if (!ws) return false;
+			return (
+				sendOrQuarantine(
+					ws,
+					JSON.stringify({ channel: WS_CHANNELS.feedbackGithubStar, data: ask }),
+					`${WS_CHANNELS.feedbackGithubStar} push`,
+					warnSlowConsumer,
+				) !== "dropped"
+			);
+		},
 	});
 
 	setSkillAdmissionResolver((workspaceId) => {
 		try {
 			const { projectId, skillOverrides } = getWorkspace(workspaceId);
 			const project = getProjects().find((p) => p.id === projectId);
-			return admissionContextFor(project, skillOverrides ?? {});
+			return admissionContextFor(project, skillOverrides ?? {}, getConfig().otherAgentSkills);
 		} catch {
-			return admissionContextFor(undefined);
+			return admissionContextFor(undefined, {}, getConfig().otherAgentSkills);
 		}
 	});
 
@@ -688,9 +923,13 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 		}
 	});
 
-	setAgentReviewEnabledResolver(() => getConfig().agentReviewEnabled !== false);
+	setAgentReviewEnabledResolver(
+		(workspaceId) => !isChatWorkspaceId(workspaceId) && getConfig().agentReviewEnabled !== false,
+	);
+	setSpecsEnabledResolver((workspaceId) => !isChatWorkspaceId(workspaceId));
 
 	setDisabledExtensionsResolver(() => new Set(getConfig().disabledExtensions));
+	setExtensionSettingsResolver(() => getConfig().extensionSettings ?? {});
 	setDisabledPackagesResolver(() => new Set(getConfig().disabledPackages));
 
 	setProjectPublisher((project) => {
@@ -698,25 +937,36 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 		if (capture) {
 			try {
 				setupObservation.observe(capture, {
-					project_present: listProjects().length > 0 ? "yes" : "no",
+					project_present: listProjects().some((candidate) => !isChatsContainer(candidate))
+						? "yes"
+						: "no",
 				});
 			} catch {}
 		}
-		server.publish(
-			WS_CHANNELS.projectUpdated,
-			JSON.stringify({ channel: WS_CHANNELS.projectUpdated, data: project }),
-		);
+		publishScoped(WS_CHANNELS.projectUpdated, project, { projectId: project.id });
 	});
 
 	setTerminalTabsPublisher((workspaceId, tabs) => {
 		const data: TerminalTabsPush = { workspaceId, tabs };
-		server.publish(
-			WS_CHANNELS.terminalTabs,
-			JSON.stringify({ channel: WS_CHANNELS.terminalTabs, data }),
-		);
+		publishScoped(WS_CHANNELS.terminalTabs, data, { workspaceId });
 	});
 
-	setWorkspacePublisher((event) => {
+	interruptWorkspaceCreations();
+	setProjectPathGuard((path) => {
+		if (creationOwnsPath(path))
+			throw new Error("This folder belongs to a workspace ThinkRail is still creating");
+	});
+	setWorkspaceCreationHandoff(workspaceCreationHandoff);
+	void replayPendingHandoffs().catch((err) => log.warn("replaying workspace handoffs failed", err));
+	setWorkspaceCreationPublisher((event) => {
+		const channel =
+			event.kind === "changed"
+				? WS_CHANNELS.workspaceCreationChanged
+				: WS_CHANNELS.workspaceCreationRemoved;
+		publishScoped(channel, event.kind === "changed" ? event.creation : event.removed);
+	});
+
+	const publishWorkspaceEvent = (event: WorkspaceLifecycleEvent) => {
 		const channel =
 			event.kind === "created"
 				? WS_CHANNELS.workspaceCreated
@@ -725,15 +975,25 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 					: WS_CHANNELS.workspaceRemoved;
 		const data =
 			event.kind === "removed" ? { projectId: event.projectId, id: event.id } : event.workspace;
-		server.publish(channel, JSON.stringify({ channel, data }));
+		const workspaceId = event.kind === "removed" ? event.id : event.workspace.id;
+		const projectId = event.kind === "removed" ? event.projectId : event.workspace.projectId;
+		publishScoped(channel, data, { workspaceId, projectId });
+	};
+	setWorkspacePublisher(publishWorkspaceEvent);
+	setChatPublishers({
+		project: (project) =>
+			publishScoped(WS_CHANNELS.projectUpdated, project, { projectId: project.id }),
+		workspace: publishWorkspaceEvent,
+		removed: (projectId, id) =>
+			publishScoped(WS_CHANNELS.workspaceRemoved, { projectId, id }, { projectId }),
 	});
 
 	const publishFsChanged = (payload: WorkspaceFsChangedPayload) => {
-		server.publish(
-			WS_CHANNELS.workspaceFsChanged,
-			JSON.stringify({ channel: WS_CHANNELS.workspaceFsChanged, data: payload }),
-		);
+		publishScoped(WS_CHANNELS.workspaceFsChanged, payload, { workspaceId: payload.workspaceId });
 		reanchorWorkspace(payload.workspaceId);
+		noteArtifactPathsChanged(payload.workspaceId, payload.paths, payload.truncated);
+		const changedRoot = loadWorkspaces().find((w) => w.id === payload.workspaceId)?.worktreePath;
+		if (changedRoot) hostSearch().invalidateRoot(changedRoot);
 		if (
 			payload.truncated ||
 			payload.paths.some((path) => path === ".pi" || path.startsWith(".pi/"))
@@ -754,45 +1014,38 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 	};
 	primeUserPiSettings();
 	for (const workspace of listAllWorkspaceRecords()) primeProjectPiSettings(workspace.worktreePath);
-	setPiPackagesPublisher(() =>
-		server.publish(
-			WS_CHANNELS.packagesChanged,
-			JSON.stringify({ channel: WS_CHANNELS.packagesChanged, data: {} }),
-		),
-	);
+	setPiPackagesPublisher(() => publishScoped(WS_CHANNELS.packagesChanged, {}));
 	const stopUserMcpWatch = watchUserMcpConfig({ onSettingsChanged: handlePiSettingsFileChanged });
-	const nudge = (channel: WsChannel) => () =>
-		server.publish(channel, JSON.stringify({ channel, data: {} }));
+	const nudge = (channel: WsChannel) => () => publishScoped(channel, {});
 	const stopLocalesWatch = watchLocalLocales({ onChange: nudge(WS_CHANNELS.localesChanged) });
 	const stopThemesWatch = watchUserThemes({ onChange: nudge(WS_CHANNELS.themesChanged) });
 	const stopFontsWatch = watchUserFonts({ onChange: nudge(WS_CHANNELS.fontsChanged) });
+	setSpeechPublisher((status) => publishScoped(WS_CHANNELS.speechChanged, status));
+	void initSpeech().catch((err) => log.warn("voice input state could not be read", err));
 	setWatchPublisher(publishFsChanged);
 	setSkillPathClassifier(isProjectSkillPath);
+	setIgnoredPathsResolver((worktreePath, paths) =>
+		ignoredPaths(
+			worktreePath,
+			paths.filter((path) => !mayHoldProjectSkills(path) && !onScratchDirPath(path)),
+		),
+	);
 	setFsNudgePublisher(publishFsChanged);
 
 	setWatchStartedPublisher(seedWorkspaceHead);
 	setRepoMetaPublisher((workspaceId) => {
 		recordWorkspaceHead(workspaceId);
-		refreshUserOwnedWorkspace(workspaceId);
+		syncWorkspaceBranch(workspaceId);
 		const workspace = loadWorkspaces().find((w) => w.id === workspaceId);
 		if (workspace) forgetOpenBranchReview(workspace.worktreePath);
 		publishFsChanged({ workspaceId, paths: [], truncated: false, skillChange: "none" });
 	});
 
 	setReviewPublisher((payload) => {
-		server.publish(
-			WS_CHANNELS.reviewChanged,
-			JSON.stringify({
-				channel: WS_CHANNELS.reviewChanged,
-				data: markClientStale(payload, payload.workspaceId),
-			}),
-		);
+		publishScoped(WS_CHANNELS.reviewChanged, markClientStale(payload, payload.workspaceId));
 	});
 	setReviewFailedPublisher((payload) => {
-		server.publish(
-			WS_CHANNELS.reviewFailed,
-			JSON.stringify({ channel: WS_CHANNELS.reviewFailed, data: payload }),
-		);
+		publishScoped(WS_CHANNELS.reviewFailed, payload);
 	});
 	setReviewCommentHandler((sessionId, commentId, note) => {
 		const capture = additionalCapture();
@@ -802,13 +1055,18 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 	});
 	installRequestReviewSeam();
 	setTitleToolHost(titleToolHost);
+	setContinueToolHost(continueToolHost);
+	setContinuationPublisher((continuation) =>
+		publishScoped(WS_CHANNELS.chatContinuation, continuation, {
+			workspaceId: continuation.sourceWorkspaceId,
+			belowProtocol: CONTINUATION_PROTOCOL_VERSION,
+		}),
+	);
+	setWorkspaceToolsHost(workspaceToolsHost);
 	reconcilePendingReviewsOnBoot();
 
 	setSettingsPublisher((config, appliedUpdate) => {
-		server.publish(
-			WS_CHANNELS.settingsChanged,
-			JSON.stringify({ channel: WS_CHANNELS.settingsChanged, data: config }),
-		);
+		publishScoped(WS_CHANNELS.settingsChanged, config);
 		if (applyAdditionalAnalyticsSettings(config, appliedUpdate)) {
 			setupObservation.clear();
 			runObservation.clear();
@@ -828,62 +1086,61 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 		if (appliedUpdate.disabledPackages !== undefined) bumpPackageSwitchGeneration();
 		if (
 			appliedUpdate.disabledExtensions !== undefined ||
+			appliedUpdate.extensionSettings !== undefined ||
 			appliedUpdate.disabledPackages !== undefined
 		) {
 			refreshExtensionTools();
 		}
 		if (appliedUpdate.disabledPackages !== undefined) publishPiPackagesChanged();
+		if (appliedUpdate.otherAgentSkills !== undefined) void refreshSkillAdmission();
 	});
 
 	setSessionCreatedPublisher((payload: SessionCreatedPayload) => {
-		server.publish(
-			WS_CHANNELS.sessionCreated,
-			JSON.stringify({ channel: WS_CHANNELS.sessionCreated, data: payload }),
-		);
+		publishScoped(WS_CHANNELS.sessionCreated, payload, { workspaceId: payload.workspaceId });
 	});
 
 	setSessionStatePublisher((record: SessionStateRecord) => {
 		stampSessionActivity(record);
-		server.publish(
+		publishScoped(
 			WS_CHANNELS.sessionState,
-			JSON.stringify({ channel: WS_CHANNELS.sessionState, data: record }),
+			record,
+			{ workspaceId: record.workspaceId },
+			record.sessionId,
 		);
 	});
 
 	setSessionDeletedPublisher((payload: SessionDeletedPayload) => {
+		forgetImageSession(payload.sessionId);
 		runObservation.forget(payload.sessionId);
 		taskObservation.forget(payload.sessionId);
-		server.publish(
-			WS_CHANNELS.sessionDeleted,
-			JSON.stringify({ channel: WS_CHANNELS.sessionDeleted, data: payload }),
-		);
+		for (const socket of sockets.values()) socket.data.held?.forgetSession(payload.sessionId);
+		publishScoped(WS_CHANNELS.sessionDeleted, payload, { workspaceId: payload.workspaceId });
 	});
 
 	setMcpLoginPublisher((push, ownerClientKey) => {
 		const ws = sockets.get(ownerClientKey);
 		if (!ws) return;
-		try {
-			ws.send(JSON.stringify({ channel: WS_CHANNELS.providerLogin, data: push }));
-		} catch {}
+		sendOrQuarantine(
+			ws,
+			JSON.stringify({ channel: WS_CHANNELS.providerLogin, data: push }),
+			`${WS_CHANNELS.providerLogin} push`,
+			warnSlowConsumer,
+		);
 	});
 
 	setMcpStatusPublisher((snapshot) => {
-		server.publish(
-			WS_CHANNELS.mcpStatus,
-			JSON.stringify({ channel: WS_CHANNELS.mcpStatus, data: snapshot }),
-		);
+		publishScoped(WS_CHANNELS.mcpStatus, snapshot, { workspaceId: snapshot.workspaceId });
 	});
 
 	setSessionResourcesPublisher((payload) => {
-		server.publish(
-			WS_CHANNELS.sessionResourcesChanged,
-			JSON.stringify({ channel: WS_CHANNELS.sessionResourcesChanged, data: payload }),
-		);
+		publishScoped(WS_CHANNELS.sessionResourcesChanged, payload, {
+			workspaceId: payload.workspaceId,
+		});
 	});
 
 	const turnTracker = new TurnTracker((sessionId) => {
 		const workspaceId = getSessionWorkspaceId(sessionId);
-		if (!workspaceId) return null;
+		if (!workspaceId || isChatWorkspaceId(workspaceId)) return null;
 		try {
 			return { workspaceId, worktreePath: getWorkspace(workspaceId).worktreePath };
 		} catch {
@@ -891,58 +1148,66 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 		}
 	});
 	setTurnPublisher((turn) => {
-		server.publish(
-			WS_CHANNELS.turnChanged,
-			JSON.stringify({ channel: WS_CHANNELS.turnChanged, data: turn }),
+		publishScoped(WS_CHANNELS.turnChanged, turn, { workspaceId: turn.workspaceId });
+	});
+	setArtifactsPublisher((workspaceId) => {
+		publishScoped(
+			WS_CHANNELS.workspaceArtifactsChanged,
+			{ workspaceId },
+			{ workspaceId, belowProtocol: ARTIFACTS_PROTOCOL_VERSION },
 		);
 	});
-	setSessionPublisher((payload) => {
+	setSessionPublisher((payload, workspaceId) => {
 		runObservation.observe(payload.sessionId, payload.event);
+		observeContinuation(payload.sessionId, payload.event);
 		void turnTracker.observe(payload.sessionId, payload.event);
-		if (payload.event.type === "tool_execution_start") {
-			const workspaceId = getSessionWorkspaceId(payload.sessionId);
-			if (workspaceId) taskObservation.toolStarted(workspaceId, payload.sessionId, payload.event);
+		const artifactEvent = artifactSessionEvent(payload.sessionId, payload.event);
+		if (artifactEvent) {
+			if (artifactEvent.type === "agent_start") void ensureWatch(workspaceId, { prewarm: true });
+			void observeArtifactSessionEvent(workspaceId, payload.sessionId, artifactEvent).catch(
+				(error) => log.warn("artifacts observation failed", error),
+			);
 		}
-		server.publish(
-			WS_CHANNELS.piEvent,
-			JSON.stringify({ channel: WS_CHANNELS.piEvent, data: payload }),
-		);
+		if (payload.event.type === "tool_execution_start") {
+			taskObservation.toolStarted(workspaceId, payload.sessionId, payload.event);
+		}
+		const frame = JSON.stringify({ channel: WS_CHANNELS.piEvent, data: payload });
+		fanOut(WS_CHANNELS.piEvent, admitsScope({ workspaceId }), (socket) => {
+			if (socket.data.held) socket.data.held.deliver(payload, frame);
+			else pushTo(WS_CHANNELS.piEvent, frame)(socket);
+		});
 		if (isTodoToolEnd(payload.event)) {
-			const workspaceId = getSessionWorkspaceId(payload.sessionId);
 			const observeCompletion = taskObservation.toolFinished(payload.sessionId, payload.event);
-			if (workspaceId)
+			if (isChatWorkspaceId(workspaceId)) void observeCompletion();
+			else
 				void maybeAttachChangeArtifacts(workspaceId, payload.sessionId).then(async () => {
 					await observeCompletion();
-					maybeAutoReReview(workspaceId, payload.sessionId);
+					await maybeAutoReReview(workspaceId, payload.sessionId);
 				});
 		}
 	});
 
 	setExtUiPublisher((request, audience) => {
-		const frame = JSON.stringify({ channel: WS_CHANNELS.piExtensionUi, data: request });
-		if (!audience) {
-			server.publish(WS_CHANNELS.piExtensionUi, frame);
-			return;
-		}
-		for (const ws of sockets.values()) {
-			if (ws.data.protocolVersion >= audience.belowProtocol) continue;
-			try {
-				ws.send(frame);
-			} catch {}
-		}
+		const workspaceId = getSessionAttribution(request.sessionId);
+		const aboutChat = workspaceId !== undefined && isChatWorkspaceId(workspaceId);
+		fanOut(
+			WS_CHANNELS.piExtensionUi,
+			({ data: { protocolVersion } }) =>
+				(!audience || protocolVersion < audience.belowProtocol) &&
+				(!aboutChat || seesChats(protocolVersion)),
+			pushTo(
+				WS_CHANNELS.piExtensionUi,
+				JSON.stringify({ channel: WS_CHANNELS.piExtensionUi, data: request }),
+				request.sessionId,
+			),
+		);
 	});
 
 	const publishProviderChanged = () => {
-		server.publish(
-			WS_CHANNELS.providerChanged,
-			JSON.stringify({ channel: WS_CHANNELS.providerChanged, data: {} }),
-		);
+		publishScoped(WS_CHANNELS.providerChanged, {});
 	};
 	setLoginPublisher((push, generation) => {
-		server.publish(
-			WS_CHANNELS.providerLogin,
-			JSON.stringify({ channel: WS_CHANNELS.providerLogin, data: push }),
-		);
+		publishScoped(WS_CHANNELS.providerLogin, push);
 		if (push.frame.kind === "success" && !push.target) publishProviderChanged();
 		trackLoginOutcome(push, generation);
 	});
@@ -999,6 +1264,8 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 		stopLocalesWatch();
 		stopThemesWatch();
 		stopFontsWatch();
+		stopSpeechInstall();
+		void stopEngine();
 		disposeAllSessions();
 		for (const timer of reapTimers.values()) clearTimeout(timer);
 		reapTimers.clear();
@@ -1014,8 +1281,13 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 	const shutdown = (): Promise<void> => {
 		shutdownPromise ??= (async () => {
 			stopHostUpdateChecks();
-			await Promise.allSettled([settleSessionsForShutdown(), shutdownAnalytics()]);
+			await Promise.allSettled([
+				settleSessionsForShutdown(),
+				shutdownAnalytics(),
+				stopWorkspaceCreations(),
+			]);
 			await turnTracker.drain();
+			await settleCredentialWritesForShutdown();
 			stop();
 		})();
 		return shutdownPromise;
@@ -1042,10 +1314,13 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 }
 
 function restoreSeamDefaults(): void {
+	resetImages();
 	setPiTrustSeed(null);
 	setSessionProjectResolver(() => null);
 	setTerminalPublisher(() => "unavailable");
 	setFeedbackPublisher(null);
+	setGithubStarPublisher(null);
+	setSearchTextPublisher(null);
 	configureSurveySource(null);
 	setSkillAdmissionResolver(null);
 	setMcpPolicyResolver(null);
@@ -1054,13 +1329,19 @@ function restoreSeamDefaults(): void {
 	setSubagentConcurrencyResolver(null);
 	setAgentReviewEnabledResolver(null);
 	setDisabledExtensionsResolver(null);
+	setExtensionSettingsResolver(null);
 	setDisabledPackagesResolver(null);
 	setProjectPublisher(null);
 	setTerminalTabsPublisher(() => {});
 	setWorkspacePublisher(null);
+	setWorkspaceCreationPublisher(null);
+	setWorkspaceCreationHandoff(null);
+	setProjectPathGuard(null);
 	setPiPackagesPublisher(null);
+	setSpeechPublisher(null);
 	setWatchPublisher(null);
 	setSkillPathClassifier(null);
+	setIgnoredPathsResolver(null);
 	setFsNudgePublisher(null);
 	setWatchStartedPublisher(null);
 	setRepoMetaPublisher(null);
@@ -1077,6 +1358,7 @@ function restoreSeamDefaults(): void {
 	setMcpStatusPublisher(() => {});
 	setSessionResourcesPublisher(() => {});
 	setTurnPublisher(() => {});
+	setArtifactsPublisher(null);
 	setSessionPublisher(() => {});
 	setExtUiPublisher(() => {});
 	setLoginPublisher(() => {});

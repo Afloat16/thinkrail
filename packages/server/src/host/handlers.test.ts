@@ -1,21 +1,36 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { afterEach, beforeEach, expect, onTestFinished, test } from "bun:test";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
-import { createFauxCore } from "@earendil-works/pi-ai/providers/faux";
+import { createFauxCore, fauxAssistantMessage } from "@earendil-works/pi-ai/providers/faux";
 import { ModelRuntime, SessionManager } from "@earendil-works/pi-coding-agent";
 import type {
+	AppConfig,
 	Project,
 	Template,
 	TemplateInfo,
 	WireModel,
 	Workspace,
+	WorkspaceArtifactsSnapshot,
+	WorkspaceCreation,
+	WorkspaceCreationRemoved,
+	WorkspaceFsChangedPayload,
+	WorkspacePathMatch,
 	WorkspaceWatchReadyResult,
 } from "@thinkrail/contracts";
 import {
 	BRANCH_STATUS_PROTOCOL_VERSION,
+	INITIAL_TERMINAL_TAB_KEY,
 	WORKSPACE_SETTLE_PROTOCOL_VERSION,
 	WS_METHODS,
 } from "@thinkrail/contracts";
@@ -27,6 +42,7 @@ import {
 	setSessionManagerFactory,
 } from "../agent";
 import { initializeAnalytics, resetAnalyticsForTests, shutdownAnalytics } from "../analytics";
+import { reconcileArtifacts } from "../artifacts";
 import {
 	configureSurveySource,
 	recordAcceptedMessage,
@@ -37,13 +53,23 @@ import {
 import { defaultSessionDirFor, writeFixtureSession } from "../history/testFixtures";
 import { addComment, getReviewSnapshot } from "../reviews";
 import { resetConfigCache } from "../settings";
+import { listTerminals } from "../terminal";
 import { todoReviewRecord } from "../todos";
-import { stopAllWatches } from "../watch";
+import { setTrashImplementationForTests } from "../trash";
+import { setWatchPublisher, stopAllWatches } from "../watch";
+import {
+	awaitWorkspaceCreation,
+	getWorkspace,
+	setWorkspaceCreationHandoff,
+	setWorkspaceCreationPublisher,
+	setWorkspaceReview,
+} from "../workspaces";
 import {
 	handleRequest,
 	openReviewForClient,
 	requestMethodDiagnostic,
 	shouldRefreshOpenReview,
+	workspaceCreationHandoff,
 } from "./handlers";
 
 const CTX = { clientKey: "test-client" };
@@ -52,6 +78,8 @@ let dataDir: string;
 let repo: string;
 const savedDataDir = process.env.THINKRAIL_DATA_DIR;
 const savedTestAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+let handlerFaux: ReturnType<typeof createFauxCore> | null = null;
 
 async function setupDefaultModelRuntime(): Promise<() => void> {
 	const savedAgentDir = process.env.PI_CODING_AGENT_DIR;
@@ -74,6 +102,7 @@ async function setupDefaultModelRuntime(): Promise<() => void> {
 		maxTokens: 4_096,
 	};
 	const faux = createFauxCore({ provider: "handler", api: "faux", models: [model] });
+	handlerFaux = faux;
 	runtime.registerProvider("handler", {
 		api: "faux",
 		baseUrl: "http://faux.local",
@@ -124,6 +153,8 @@ beforeEach(() => {
 
 afterEach(() => {
 	stopAllWatches();
+	setWatchPublisher(null);
+	setTrashImplementationForTests(undefined);
 	resetConfigCache();
 	resetFeedbackForTests();
 	resetSurveyForTests();
@@ -138,6 +169,180 @@ afterEach(() => {
 test("every contract method has a registered handler", () => {
 	const unregistered = Object.values(WS_METHODS).filter((m) => requestMethodDiagnostic(m) !== m);
 	expect(unregistered).toEqual([]);
+});
+
+test("file mutation handlers invalidate watcher-ignored paths after success", async () => {
+	const directory = join(repo, "node_modules", "demo");
+	mkdirSync(directory, { recursive: true });
+	writeFileSync(join(directory, "source.txt"), "content");
+	writeFileSync(
+		join(dataDir, "workspaces.json"),
+		JSON.stringify([
+			{
+				id: "w1",
+				projectId: "p1",
+				name: "Default",
+				worktreePath: repo,
+				createdAt: 1,
+			},
+		]),
+	);
+	const frames: WorkspaceFsChangedPayload[] = [];
+	setWatchPublisher((payload) => frames.push(payload));
+	setTrashImplementationForTests(async (input) => {
+		if (typeof input !== "string") throw new Error("expected one path");
+		rmSync(input, { recursive: true });
+	});
+
+	expect(
+		await handleRequest(
+			"fs.copy",
+			{
+				sourceWorkspaceId: "w1",
+				sourcePath: "node_modules/demo/source.txt",
+				destinationWorkspaceId: "w1",
+				destinationDirectory: "node_modules/demo",
+			},
+			CTX,
+		),
+	).toEqual({ path: "node_modules/demo/source copy.txt" });
+	expect(
+		await handleRequest(
+			"fs.delete",
+			{ workspaceId: "w1", path: "node_modules/demo/source copy.txt" },
+			CTX,
+		),
+	).toEqual({ ok: true });
+	expect(
+		await handleRequest("fs.delete", { workspaceId: "w1", path: "node_modules/demo" }, CTX),
+	).toEqual({ ok: true });
+	expect(frames.filter((frame) => frame.paths.length > 0)).toEqual([
+		{
+			workspaceId: "w1",
+			paths: ["node_modules/demo/source copy.txt"],
+			truncated: false,
+			skillChange: "unknown",
+		},
+		{
+			workspaceId: "w1",
+			paths: ["node_modules/demo/source copy.txt"],
+			truncated: false,
+			skillChange: "unknown",
+		},
+		{ workspaceId: "w1", paths: ["node_modules/demo"], truncated: false, skillChange: "unknown" },
+	]);
+	expect(existsSync(directory)).toBe(false);
+});
+
+test("user file mutations keep the artifact index honest", async () => {
+	const context = join(repo, ".thinkrail", "context");
+	mkdirSync(join(context, "mockups"), { recursive: true });
+	writeFileSync(join(context, "a.md"), "a");
+	writeFileSync(join(context, "b.md"), "b");
+	writeFileSync(join(context, "c.md"), "c");
+	writeFileSync(
+		join(dataDir, "workspaces.json"),
+		JSON.stringify([{ id: "wa", projectId: "p1", name: "a", worktreePath: repo, createdAt: 1 }]),
+	);
+	setTrashImplementationForTests(async (input) => {
+		if (typeof input !== "string") throw new Error("expected one path");
+		reconcileArtifacts("wa");
+		rmSync(input, { recursive: true });
+	});
+	const list = async () =>
+		(
+			(await handleRequest(
+				"artifacts.list",
+				{ workspaceId: "wa" },
+				CTX,
+			)) as WorkspaceArtifactsSnapshot
+		).artifacts
+			.map((artifact) => `${artifact.state} ${artifact.path}`)
+			.sort();
+	expect(await list()).toEqual([
+		"live .thinkrail/context/a.md",
+		"live .thinkrail/context/b.md",
+		"live .thinkrail/context/c.md",
+	]);
+
+	await handleRequest("fs.delete", { workspaceId: "wa", path: ".thinkrail/context/a.md" }, CTX);
+	expect(
+		await handleRequest(
+			"fs.rename",
+			{ workspaceId: "wa", path: ".thinkrail/context/b.md", name: "renamed.md" },
+			CTX,
+		),
+	).toEqual({ path: ".thinkrail/context/renamed.md" });
+	expect(
+		await handleRequest(
+			"fs.move",
+			{
+				sourceWorkspaceId: "wa",
+				sourcePath: ".thinkrail/context/c.md",
+				destinationWorkspaceId: "wa",
+				destinationDirectory: ".",
+			},
+			CTX,
+		),
+	).toEqual({ path: "c.md" });
+	expect(await list()).toEqual(["live .thinkrail/context/renamed.md"]);
+
+	rmSync(join(context, "renamed.md"));
+	expect(await list()).toEqual(["deleted .thinkrail/context/renamed.md"]);
+	await handleRequest(
+		"artifacts.restore",
+		{ workspaceId: "wa", path: ".thinkrail/context/renamed.md" },
+		CTX,
+	);
+	expect(readFileSync(join(context, "renamed.md"), "utf8")).toBe("b");
+	rmSync(join(context, "renamed.md"));
+	await list();
+	await handleRequest(
+		"artifacts.discard",
+		{ workspaceId: "wa", path: ".thinkrail/context/renamed.md" },
+		CTX,
+	);
+	expect(await list()).toEqual([]);
+});
+
+test("a paste into the artifacts folder seeds it first when it does not exist yet", async () => {
+	writeFileSync(join(repo, "notes.md"), "notes\n");
+	writeFileSync(join(repo, "todo.md"), "todo\n");
+	writeFileSync(
+		join(dataDir, "workspaces.json"),
+		JSON.stringify([{ id: "wa", projectId: "p1", name: "a", worktreePath: repo, createdAt: 1 }]),
+	);
+	expect(existsSync(join(repo, ".thinkrail"))).toBe(false);
+	expect(
+		await handleRequest(
+			"fs.copy",
+			{
+				sourceWorkspaceId: "wa",
+				sourcePath: "notes.md",
+				destinationWorkspaceId: "wa",
+				destinationDirectory: ".thinkrail/context",
+			},
+			CTX,
+		),
+	).toEqual({ path: ".thinkrail/context/notes.md" });
+	expect(readFileSync(join(repo, ".thinkrail", "context", ".gitignore"), "utf8")).toBe("*\n");
+	rmSync(join(repo, ".thinkrail"), { recursive: true });
+	expect(
+		await handleRequest(
+			"fs.move",
+			{
+				sourceWorkspaceId: "wa",
+				sourcePath: "todo.md",
+				destinationWorkspaceId: "wa",
+				destinationDirectory: ".thinkrail/context",
+			},
+			CTX,
+		),
+	).toEqual({ path: ".thinkrail/context/todo.md" });
+	expect(readFileSync(join(repo, ".thinkrail", "context", ".gitignore"), "utf8")).toBe("*\n");
+	expect(gitText(repo, "status", "--porcelain", "--untracked-files=all")).not.toContain(
+		".thinkrail",
+	);
 });
 
 test("clone handlers resolve the destination and return an opened local project", async () => {
@@ -242,6 +447,84 @@ test("branch status reports a review-free branch, and workspace.push publishes i
 		aheadOfBase: 1,
 		review: null,
 	});
+});
+
+test("branch status measures the branch a managed workspace's terminal switched to", async () => {
+	const workspace = (await handleRequest(
+		"workspace.create",
+		{ projectId: "p1", name: "Switched" },
+		CTX,
+	)) as Workspace;
+	const remote = join(dataDir, "switched.git");
+	mkdirSync(remote);
+	git(remote, "init", "--bare");
+	git(repo, "remote", "add", "origin", remote);
+	await handleRequest(
+		"workspace.push",
+		{ workspaceId: workspace.id, branch: workspace.branch },
+		CTX,
+	);
+	git(workspace.worktreePath, "switch", "-c", "feature/terminal");
+
+	const rows = (await handleRequest(
+		"workspace.list",
+		{ projectId: "p1", includeDiffStats: false },
+		CTX,
+	)) as Workspace[];
+	expect(rows.find((row) => row.id === workspace.id)).toMatchObject({
+		branch: "feature/terminal",
+	});
+	expect(
+		await handleRequest("workspace.branchStatus", { workspaceId: workspace.id }, CTX),
+	).toMatchObject({ published: false, review: null });
+});
+
+test("a workspace on its base branch gets no review lookup and drops a stored foreign review", async () => {
+	const workspace = (await handleRequest(
+		"workspace.create",
+		{ projectId: "p1", name: "On base" },
+		CTX,
+	)) as Workspace;
+	git(repo, "remote", "add", "origin", "https://github.com/fake-owner/fake-repo.git");
+	const bin = join(dataDir, "bin");
+	const ghCalls = join(dataDir, "gh-calls");
+	mkdirSync(bin);
+	writeFileSync(join(bin, "gh"), `#!/bin/sh\necho "$@" >> ${JSON.stringify(ghCalls)}\necho "[]"\n`);
+	chmodSync(join(bin, "gh"), 0o755);
+	const savedPath = process.env.PATH;
+	process.env.PATH = `${bin}${delimiter}${savedPath ?? ""}`;
+	onTestFinished(() => {
+		process.env.PATH = savedPath;
+	});
+	git(repo, "switch", "-c", "elsewhere");
+	git(workspace.worktreePath, "switch", "main");
+	await handleRequest("workspace.list", { projectId: "p1", includeDiffStats: false }, CTX);
+	setWorkspaceReview(
+		workspace.id,
+		{ kind: "pull-request", number: 501, state: "merged", url: "https://example.test/501" },
+		"main",
+	);
+
+	expect(
+		await handleRequest(
+			"workspace.branchStatus",
+			{ workspaceId: workspace.id, skipFetch: true },
+			CTX,
+		),
+	).toMatchObject({ onBase: true, review: null });
+	expect(getWorkspace(workspace.id)).toMatchObject({ branch: "main" });
+	expect(getWorkspace(workspace.id).review).toBeUndefined();
+
+	setWorkspaceReview(workspace.id, { kind: "pull-request", number: 501, state: "open" }, "main");
+	expect(
+		await handleRequest(
+			"workspace.openReview",
+			{ workspaceId: workspace.id, allowCached: true },
+			CTX,
+		),
+	).toBeNull();
+	expect(getWorkspace(workspace.id).review).toBeUndefined();
+	expect(existsSync(ghCalls)).toBe(false);
 });
 
 test("a CI poll re-reads the review without fetching origin; a focus read still fetches", async () => {
@@ -461,6 +744,49 @@ test("template reads resolve a project's current checkout and reject ambiguous l
 	}
 });
 
+test("a background create hands the finished workspace a terminal and the held chat", async () => {
+	const cleanup = await setupDefaultModelRuntime();
+	setSessionManagerFactory((cwd) => SessionManager.inMemory(cwd, { id: "kickoff-chat" }));
+	const removed: WorkspaceCreationRemoved[] = [];
+	setWorkspaceCreationPublisher((event) => {
+		if (event.kind === "removed") removed.push(event.removed);
+	});
+	setWorkspaceCreationHandoff(workspaceCreationHandoff);
+	try {
+		const models = (await handleRequest("model.list", {}, CTX)) as WireModel[];
+		const selected = models.find((model) => model.provider === "handler");
+		if (!selected) throw new Error("handler test model was not available");
+		handlerFaux?.setResponses([
+			async () => {
+				await Bun.sleep(4_000);
+				return fauxAssistantMessage("done");
+			},
+		]);
+		const started = Date.now();
+		const creation = (await handleRequest(
+			"workspace.startCreate",
+			{ projectId: "p1", kickoff: { text: "Start here", model: selected } },
+			CTX,
+		)) as WorkspaceCreation;
+		expect(creation).toMatchObject({ state: "running", kickoff: { text: "Start here" } });
+		const workspace = await awaitWorkspaceCreation(creation.id);
+		expect(Date.now() - started).toBeLessThan(3_000);
+
+		expect(workspace.initialTerminalPending).toBeUndefined();
+		expect(removed).toHaveLength(1);
+		expect(removed[0]).toMatchObject({ id: creation.id, workspace: { id: creation.id } });
+		expect(removed[0]?.sessionId).toEqual(expect.any(String));
+		expect(await handleRequest("workspace.listCreations", {}, CTX)).toEqual([]);
+	} finally {
+		setWorkspaceCreationHandoff(null);
+		setWorkspaceCreationPublisher(null);
+		disposeAllSessions();
+		configurePiRuntime(null);
+		setSessionManagerFactory((cwd) => SessionManager.create(cwd));
+		cleanup();
+	}
+});
+
 test("model.default and new session creation share the AppConfig default resolution", async () => {
 	const cleanup = await setupDefaultModelRuntime();
 	setSessionManagerFactory((cwd) => SessionManager.inMemory(cwd, { id: "default-resolution" }));
@@ -498,6 +824,30 @@ test("model.default and new session creation share the AppConfig default resolut
 	}
 });
 
+test("settings.update merges extension settings per key and rejects a malformed value", async () => {
+	await handleRequest(
+		"settings.update",
+		{ config: { extensionSettings: { "ask-user-question": { richPreviews: false } } } },
+		CTX,
+	);
+	const config = (await handleRequest(
+		"settings.update",
+		{ config: { extensionSettings: { "ask-user-question": { other: true } } } },
+		CTX,
+	)) as AppConfig;
+	expect(config.extensionSettings["ask-user-question"]).toEqual({
+		richPreviews: false,
+		other: true,
+	});
+	await expect(
+		handleRequest(
+			"settings.update",
+			{ config: { extensionSettings: { "ask-user-question": { richPreviews: "no" } } } } as never,
+			CTX,
+		),
+	).rejects.toThrow("extensionSettings must map extension names to boolean settings");
+});
+
 test("extension.list reflects disabledExtensions written through settings.update", async () => {
 	expect(await handleRequest("extension.list", {}, CTX)).toEqual([
 		{
@@ -515,13 +865,14 @@ test("extension.list reflects disabledExtensions written through settings.update
 			enabled: true,
 			tools: ["ask_user_question"],
 			hasChildExtensions: false,
+			settings: [{ key: "richPreviews", default: true }],
 		},
 		{
 			name: "web-access",
 			title: "Web access",
 			description: expect.any(String),
 			enabled: true,
-			tools: ["web_search", "fetch_content", "get_search_content"],
+			tools: ["web_search", "source_check", "fetch_content", "get_search_content", "web_enable"],
 			hasChildExtensions: true,
 		},
 	]);
@@ -564,6 +915,7 @@ test("feedback.respond persists a popup action through the handler", async () =>
 		submittedSurveyId: null,
 		submittedIteration: null,
 		lastInvitedAt: null,
+		githubStarAsked: false,
 	});
 });
 
@@ -1040,6 +1392,20 @@ test("a review send that names its chat lands every file's drafts there as one p
 		setSessionManagerFactory((cwd) => SessionManager.create(cwd));
 		cleanup();
 	}
+});
+
+test("a path resolved into a Default it had to ensure gets the Default's first terminal", async () => {
+	const match = (await handleRequest(
+		"workspace.resolvePath",
+		{ path: join(repo, "README.md") },
+		CTX,
+	)) as WorkspacePathMatch;
+	expect(match).toMatchObject({ projectId: "p1", relativePath: "README.md" });
+	expect(getWorkspace(match.workspaceId)).toMatchObject({ kind: "default" });
+	expect(getWorkspace(match.workspaceId).initialTerminalPending).toBeUndefined();
+	expect(listTerminals(match.workspaceId)).toEqual([
+		{ tabKey: INITIAL_TERMINAL_TAB_KEY, title: "Terminal 1" },
+	]);
 });
 
 test("workspace mutation handlers reject the Default before any side effect", async () => {

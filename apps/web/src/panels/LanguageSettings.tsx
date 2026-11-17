@@ -3,6 +3,7 @@ import type { LocalLocaleFileErrorCode, LocalLocalesSnapshot } from "@thinkrail/
 import { languageName, SYSTEM_LOCALE } from "@thinkrail/locales";
 import { T, useT } from "@thinkrail/locales/react";
 import { type ReactNode, useMemo } from "react";
+import { REPO_URL } from "@/constants/branding";
 import {
 	effectiveLocale,
 	type LanguageOption,
@@ -17,7 +18,6 @@ import { SettingsGroup, SettingsPageContainer } from "./SettingsGroup";
 import { SettingsRadioCards, type SettingsRadioChoice } from "./SettingsRadioCards";
 import { SettingsRow } from "./SettingsRow";
 
-const REPO_URL = "https://github.com/JetBrains/thinkrail";
 export const CONTRIBUTE_TRANSLATIONS_URL = `${REPO_URL}/blob/main/CONTRIBUTING.md#translations`;
 
 export function repoSourceUrl(appVersion: string | null, path: string): string {
@@ -37,7 +37,7 @@ function InlineLink({ href, children }: { href: string; children?: ReactNode }) 
 			href={href}
 			target="_blank"
 			rel="noopener noreferrer"
-			className="text-primary underline underline-offset-2 hover:opacity-80"
+			className="text-primary underline underline-offset-2 hover:opacity-80 focus-visible:focus-ring"
 		>
 			{children}
 		</a>
@@ -222,7 +222,7 @@ export function LanguagePage({
 							href={CONTRIBUTE_TRANSLATIONS_URL}
 							target="_blank"
 							rel="noopener noreferrer"
-							className="inline-flex items-center gap-4 tr-text-ui text-primary underline-offset-2 hover:underline"
+							className="inline-flex items-center gap-4 tr-text-ui text-primary underline-offset-2 hover:underline focus-visible:focus-ring"
 						>
 							<ExternalLink className="size-14" />
 							{t("settings.language.contribute.link")}

@@ -194,6 +194,12 @@ export async function approveMcpServer(
 	);
 }
 
+function cancelLoginQuietly(loginId: string): void {
+	void getTransport()
+		.request("provider.loginCancel", { loginId })
+		.catch(() => {});
+}
+
 function writeSetting(
 	workspaceId: string,
 	row: McpServerRow,
@@ -250,6 +256,7 @@ export function McpServerRowView({
 	return (
 		<li
 			data-testid="mcp-server-row"
+			data-focus-row={row.key}
 			data-name={summary.name}
 			data-scope={summary.scope}
 			data-state={row.state}
@@ -348,6 +355,7 @@ export function McpServerRowView({
 								icon={MoreVertical}
 								label={t("mcp.server.more", { name: summary.name })}
 								data-testid="mcp-server-menu"
+								data-focus-row-primary
 							/>
 						</DropdownMenuTrigger>
 						<DropdownMenuContent align="end">
@@ -493,7 +501,7 @@ function ExposureMenu({
 					disabled={disabled}
 					className={cn(
 						CHIP_CLASS,
-						"inline-flex items-center gap-2 outline-none hover:bg-control-bg-hovered hover:text-text-default focus-visible:ring-2 focus-visible:ring-primary disabled:text-control-disabled-text disabled:hover:bg-transparent",
+						"inline-flex items-center gap-2 hover:bg-control-bg-hovered hover:text-text-default focus-visible:focus-ring disabled:text-control-disabled-text disabled:hover:bg-transparent",
 					)}
 				>
 					{mcpExposureLabel(t, summary.effectiveExposure)}
@@ -651,6 +659,7 @@ export function McpEmptyState({
 					size="m"
 					iconLeft={Plus}
 					data-testid="mcp-empty-add"
+					data-focus-fallback="mcp-servers"
 					disabled={disabled}
 					onClick={onAdd}
 				>
@@ -814,9 +823,7 @@ function McpWorkspaceSettings({ workspace }: { workspace: Workspace }) {
 					}
 					const { loginId } = await getTransport().request(method, { workspaceId, name });
 					if (useAppStore.getState().removedWorkspaceIds[workspaceId]) {
-						void getTransport()
-							.request("provider.loginCancel", { loginId })
-							.catch(() => {});
+						cancelLoginQuietly(loginId);
 						return null;
 					}
 					useAppStore
@@ -983,7 +990,11 @@ function McpWorkspaceSettings({ workspace }: { workspace: Workspace }) {
 					onPreset={(preset) => setAdding({ tier: "form", preset, key: Date.now() })}
 				/>
 			) : (
-				<ul className="flex flex-col gap-4" data-testid="mcp-server-list">
+				<ul
+					className="flex flex-col gap-4"
+					data-testid="mcp-server-list"
+					data-focus-list="mcp-servers"
+				>
 					{rows.map((row) => (
 						<McpServerRowView
 							key={row.key}

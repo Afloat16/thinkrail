@@ -146,14 +146,17 @@ flowchart LR
 8. The spec tree is the only durable record; how and when durable content reaches it is the
    workflow's call — written straight into the tree as decisions land (no temp doc at all), promoted
    incrementally from a task-spec as decisions settle, or promoted when the work lands. What never
-   varies: durable content is in the tree before its temp doc is cleaned up, and there is no
+   varies: durable content is in the tree before its temp doc is retired, and there is no
    parallel durable plan/state format.
 9. Temp docs are optional and belong to their workflow. When used, the task-spec is the default
    spine — design, plan, pipeline state, and review notes live as its sections; extra working files
    (resume state, scratch plans) are declared by naming their shape. **All temp docs live in the
    workspace's gitignored `.thinkrail/context/`** (host-seeded per worktree — see the server's
-   workspaces module — so they never reach the committed tree). The owning workflow also owns cleanup
-   — delete when the work lands, by default; a temp doc never becomes the record.
+   workspaces module — so they never reach the committed tree). **A workflow never deletes a temp
+   doc:** it stays as one of the user's artifacts (ThinkRail's Artifacts tool), and only the user
+   removes it. The owning workflow retires it instead — a task-spec gets `status: done`, which takes it
+   out of spec search; a reusable working file is overwritten the next time. A temp doc never becomes
+   the record.
 
 **Scaling**
 10. Scale by route and composition, not by prose: work that needs no workflow decision bypasses the
@@ -217,6 +220,11 @@ the design tree / frontier, an uncapped round, facts looked up rather than asked
 bar. Rejected by user decision: a separate opt-in "grill me" skill (depth lives in the shared norm,
 so every workflow gets it) and grilling's "confirm shared understanding" gate (an empty frontier
 proceeds; each workflow's own gates still apply).
+Its inference confirmation is a **single "Looks right" option**: the tool's own Other row carries a
+correction and its per-question **discuss first** mark carries disagreement. The earlier authored
+rejection row ("Off base — ask me directly") is gone: it was an *answer* that looked like an escape, and
+the local sessions held 30 agent-authored look-alikes ("Не то — спроси иначе") that hid the real Other
+row. A discuss-first answer is therefore never settled on a guess — the agent explains, then asks again.
 Meta-rule 4's entry model is in effect: at the start of new work the parent module's
 `before_agent_start` rule points workflow-eligible work at `choosing-a-workflow`, which routes to today's
 family; already-routed work resumes, and direct work bypasses the router. `writing-workflow-skills` (self-trigger only) and the concept skills (reached by name) sit outside

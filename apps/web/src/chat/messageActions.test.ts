@@ -20,7 +20,15 @@ describe("deriveMessageActions", () => {
 			{
 				kind: "divider",
 				id: "divider-1",
-				data: { elapsedMs: 1, toolCount: 0, specs: [], changedFiles: [], receipt: null },
+				data: {
+					outcome: "done",
+					elapsedMs: 1,
+					toolCount: 0,
+					specs: [],
+					changedFiles: [],
+					artifacts: [],
+					receipt: null,
+				},
 			},
 			user("user-2"),
 			markdown("answer-2"),
@@ -44,7 +52,15 @@ describe("deriveMessageActions", () => {
 			{
 				kind: "divider",
 				id: "divider-1",
-				data: { elapsedMs: 1, toolCount: 0, specs: [], changedFiles: [], receipt: null },
+				data: {
+					outcome: "done",
+					elapsedMs: 1,
+					toolCount: 0,
+					specs: [],
+					changedFiles: [],
+					artifacts: [],
+					receipt: null,
+				},
 			},
 			{
 				kind: "backgroundCommandCompletion",

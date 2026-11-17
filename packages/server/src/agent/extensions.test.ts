@@ -1,24 +1,30 @@
 import { describe, expect, it, spyOn } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import { registryInlineExtensions } from "../extensions";
+import { SPEC_SECTION } from "pi-spec-graph";
+import { type HostSessionServices, registryInlineExtensions, workspaceFiles } from "../extensions";
+import { artifactsGuard } from "./artifactsGuard";
 import {
 	buildResourceLoader,
 	bumpPackagesRevision,
 	childBaseExtensionFactories,
 	childExtensionFactories,
 	disabledExtensions,
-	isLoaderPackagePolicyStale,
+	extensionSettings,
+	isLoaderPolicyStale,
 	listProjectAliasSkillNames,
 	listSkillCatalog,
 	listSkillCommands,
 	providerExtensionPaths,
 	setDisabledExtensionsResolver,
 	setDisabledPackagesResolver,
+	setExtensionSettingsResolver,
 	setInstalledPackagesListener,
+	setSpecsEnabledResolver,
+	withoutSpecRule,
 } from "./extensions";
 import { headlessSearchPolicy } from "./headlessSearch";
 import { oversizedImageGuard } from "./imageGuard";
@@ -26,6 +32,7 @@ import { createPiSettings } from "./packages";
 import { writeFixturePiPackage } from "./packages/testFixtures";
 import type { SkillAdmissionContext } from "./skillAdmission";
 import { skillCarryover } from "./skillCarryover";
+import { skillCatalog } from "./skillCatalog";
 
 function ctx(trusted: boolean, acknowledged: string[] = []): SkillAdmissionContext {
 	return {
@@ -34,6 +41,8 @@ function ctx(trusted: boolean, acknowledged: string[] = []): SkillAdmissionConte
 		acknowledged,
 		disabled: [],
 		disabledGroups: [],
+		enabledGroups: [],
+		otherAgentSkills: true,
 		overrides: {},
 	};
 }
@@ -243,6 +252,8 @@ describe("listSkillCommands", () => {
 				acknowledged: [],
 				disabled: [],
 				disabledGroups: [],
+				enabledGroups: [],
+				otherAgentSkills: true,
 				overrides: {},
 			});
 			expect(enabled.some((command) => command.name === "skill:personal-widget")).toBe(true);
@@ -253,9 +264,72 @@ describe("listSkillCommands", () => {
 				acknowledged: [],
 				disabled: [],
 				disabledGroups: ["personal"],
+				enabledGroups: [],
+				otherAgentSkills: true,
 				overrides: {},
 			});
 			expect(groupOff.some((command) => command.name === "skill:personal-widget")).toBe(false);
+		} finally {
+			restore();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("a switched-off personal skill never shadows a same-name project alias", async () => {
+		const root = mkdtempSync(join(tmpdir(), "thinkrail-skill-shadow-"));
+		const project = join(root, "project");
+		const home = join(root, "home");
+		const agentDir = join(root, "pi-agent");
+		mkdirSync(project, { recursive: true });
+		mkdirSync(home, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		const restore = stubSkillEnv(home, agentDir);
+		try {
+			writeSkill(join(home, ".claude", "skills"), "deploy", "personal deploy");
+			writeSkill(join(project, ".claude", "skills"), "deploy", "project deploy");
+			const admission: SkillAdmissionContext = {
+				trusted: true,
+				piResourceTrusted: true,
+				acknowledged: ["deploy"],
+				disabled: [],
+				disabledGroups: [],
+				enabledGroups: [],
+				otherAgentSkills: false,
+				overrides: {},
+			};
+			const commands = await listSkillCommands(project, admission);
+			expect(
+				commands.filter((command) => command.name === "skill:deploy").map((c) => c.description),
+			).toEqual(["project deploy"]);
+			const catalog = await listSkillCatalog(project, admission);
+			expect(
+				catalog
+					.filter((entry) => entry.name === "deploy")
+					.map((entry) => [entry.group, entry.decision])
+					.sort(),
+			).toEqual([
+				["personal", "disabled"],
+				["project", "load"],
+			]);
+			const overridden = { ...admission, overrides: { lint: "on" as const } };
+			expect(
+				(await listSkillCommands(project, overridden))
+					.filter((command) => command.name === "skill:deploy")
+					.map((c) => c.description),
+			).toEqual(["project deploy"]);
+			expect(
+				(await listSkillCatalog(project, overridden))
+					.filter((entry) => entry.name === "deploy")
+					.map((entry) => [entry.group, entry.decision])
+					.sort(),
+			).toEqual([
+				["personal", "disabled"],
+				["project", "load"],
+			]);
+			const optedIn = await listSkillCommands(project, { ...admission, otherAgentSkills: true });
+			expect(
+				optedIn.filter((command) => command.name === "skill:deploy").map((c) => c.description),
+			).toEqual(["personal deploy"]);
 		} finally {
 			restore();
 			rmSync(root, { recursive: true, force: true });
@@ -368,6 +442,8 @@ describe("buildResourceLoader", () => {
 				acknowledged: [],
 				disabled: [],
 				disabledGroups: [],
+				enabledGroups: [],
+				otherAgentSkills: true,
 				overrides: {},
 			};
 			const settingsManager = SettingsManager.create(project, agentDir, { projectTrusted: true });
@@ -403,6 +479,8 @@ describe("buildResourceLoader", () => {
 				acknowledged: [],
 				disabled: [],
 				disabledGroups: [],
+				enabledGroups: [],
+				otherAgentSkills: true,
 				overrides: {},
 			};
 			const settingsManager = SettingsManager.create(project, agentDir, { projectTrusted: true });
@@ -437,6 +515,8 @@ describe("buildResourceLoader", () => {
 				acknowledged: [],
 				disabled: [],
 				disabledGroups: [],
+				enabledGroups: [],
+				otherAgentSkills: true,
 				overrides: {},
 			};
 			const settingsManager = SettingsManager.create(project, agentDir, { projectTrusted: true });
@@ -452,10 +532,23 @@ describe("buildResourceLoader", () => {
 	});
 });
 
+const hostServices: HostSessionServices = {
+	expectToolResponse: () => {},
+	awaitToolResponse: async () => ({ kind: "deferred" }),
+	workspaceFiles,
+};
+
 describe("registry extensions", () => {
 	async function visualizeTool(cwd: string, agentDir: string) {
 		const settingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: true });
-		const loader = await buildResourceLoader(cwd, settingsManager, () => ctx(true));
+		const loader = await buildResourceLoader(
+			cwd,
+			settingsManager,
+			() => ctx(true),
+			[],
+			[],
+			hostServices,
+		);
 		const extension = loader
 			.getExtensions()
 			.extensions.find((candidate) => candidate.tools.has("visualize"));
@@ -465,7 +558,7 @@ describe("registry extensions", () => {
 		return {
 			extension,
 			execute: (params: unknown) =>
-				tool.definition.execute("call", params, undefined, undefined, undefined as never),
+				tool.definition.execute("call", params, undefined, undefined, { cwd } as never),
 		};
 	}
 
@@ -481,9 +574,16 @@ describe("registry extensions", () => {
 		try {
 			const { extension, execute } = await visualizeTool(project, agentDir);
 			expect(extension.path).toBe("<inline:visualize>");
-			await expect(
-				execute({ type: "diagram", mermaid: "flowchart LR\n A --> B" }),
-			).resolves.toMatchObject({ details: { type: "diagram" } });
+			const drawn = await execute({ type: "diagram", mermaid: "flowchart LR\n A --> B" });
+			expect(drawn).toMatchObject({ details: { type: "diagram" } });
+			const saved = /Saved to `(\.thinkrail\/context\/visualize\/[^`]+\.md)`/.exec(
+				drawn.content.map((part) => (part.type === "text" ? part.text : "")).join(""),
+			)?.[1];
+			expect(saved).toBeDefined();
+			expect(readFileSync(join(project, saved as string), "utf8")).toContain("```mermaid");
+			expect(readFileSync(join(project, ".thinkrail", "context", ".gitignore"), "utf8")).toBe(
+				"*\n",
+			);
 			await expect(execute({ type: "diagram", mermaid: "flowchart LR\n A -->" })).rejects.toThrow(
 				/invalid Mermaid syntax in `mermaid`[\s\S]*Parse error/,
 			);
@@ -506,7 +606,14 @@ describe("registry extensions", () => {
 		setDisabledExtensionsResolver(() => disabled);
 		try {
 			const settingsManager = SettingsManager.create(project, agentDir, { projectTrusted: true });
-			const loader = await buildResourceLoader(project, settingsManager, () => ctx(true));
+			const loader = await buildResourceLoader(
+				project,
+				settingsManager,
+				() => ctx(true),
+				[],
+				[],
+				hostServices,
+			);
 			const paths = () => loader.getExtensions().extensions.map((extension) => extension.path);
 			const tools = () =>
 				loader.getExtensions().extensions.flatMap((extension) => [...extension.tools.keys()]);
@@ -529,6 +636,97 @@ describe("registry extensions", () => {
 		}
 	});
 
+	it("marks a loader stale when an extension setting changes and current again after reload", async () => {
+		const root = mkdtempSync(join(tmpdir(), "thinkrail-registry-settings-"));
+		const project = join(root, "project");
+		const home = join(root, "home");
+		const agentDir = join(root, "pi-agent");
+		mkdirSync(project, { recursive: true });
+		mkdirSync(home, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		const restore = stubSkillEnv(home, agentDir);
+		let values: Record<string, Record<string, boolean>> = {};
+		setExtensionSettingsResolver(() => values);
+		try {
+			const settingsManager = SettingsManager.create(project, agentDir, { projectTrusted: true });
+			const loader = await buildResourceLoader(
+				project,
+				settingsManager,
+				() => ctx(true),
+				[],
+				[],
+				hostServices,
+			);
+			expect(isLoaderPolicyStale(loader)).toBe(false);
+			values = { "ask-user-question": { richPreviews: false } };
+			expect(isLoaderPolicyStale(loader)).toBe(true);
+			await loader.reload();
+			expect(isLoaderPolicyStale(loader)).toBe(false);
+			values = { "ask-user-question": { richPreviews: false } };
+			expect(isLoaderPolicyStale(loader)).toBe(false);
+		} finally {
+			setExtensionSettingsResolver(null);
+			restore();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("loads extensions with the settings snapshot it records, so a change-and-revert mid-reload stays consistent", async () => {
+		const root = mkdtempSync(join(tmpdir(), "thinkrail-registry-settings-race-"));
+		const project = join(root, "project");
+		const home = join(root, "home");
+		const agentDir = join(root, "pi-agent");
+		mkdirSync(project, { recursive: true });
+		mkdirSync(home, { recursive: true });
+		mkdirSync(agentDir, { recursive: true });
+		const restore = stubSkillEnv(home, agentDir);
+		const off = { "ask-user-question": { richPreviews: false } };
+		const on = { "ask-user-question": { richPreviews: true } };
+		let reads: Record<string, Record<string, boolean>>[] = [];
+		let settled = on;
+		setExtensionSettingsResolver(() => reads.shift() ?? settled);
+		try {
+			const settingsManager = SettingsManager.create(project, agentDir, { projectTrusted: true });
+			const loader = await buildResourceLoader(
+				project,
+				settingsManager,
+				() => ctx(true),
+				[],
+				[],
+				hostServices,
+			);
+			const askSchema = () =>
+				JSON.stringify(
+					loader
+						.getExtensions()
+						.extensions.flatMap((extension) => [...extension.tools.values()])
+						.find((tool) => tool.definition.name === "ask_user_question")?.definition.parameters,
+				);
+			expect(askSchema()).toContain("previewFile");
+			reads = [off, on];
+			settled = off;
+			await loader.reload();
+			reads = [];
+			expect(askSchema()).not.toContain("previewFile");
+			expect(isLoaderPolicyStale(loader)).toBe(false);
+		} finally {
+			setExtensionSettingsResolver(null);
+			restore();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("treats a throwing extension settings resolver as no stored values", () => {
+		setExtensionSettingsResolver(() => {
+			throw new Error("broken config");
+		});
+		try {
+			expect(extensionSettings()).toEqual({});
+		} finally {
+			setExtensionSettingsResolver(null);
+		}
+	});
+
 	it("treats a throwing resolver as nothing disabled", () => {
 		setDisabledExtensionsResolver(() => {
 			throw new Error("settings unavailable");
@@ -541,14 +739,15 @@ describe("registry extensions", () => {
 	});
 
 	it("keeps the curated child set and appends registry children", () => {
-		const children = childExtensionFactories();
-		expect(children).toHaveLength(2 + registryInlineExtensions("childExtensions").length);
+		const children = childExtensionFactories("w1");
+		expect(children).toHaveLength(3 + registryInlineExtensions("childExtensions").length);
 		expect(children[0]).toBe(headlessSearchPolicy);
 		expect(typeof children[1]).toBe("function");
+		expect(children[2]).toBe(skillCatalog);
 		const names = (inlines: typeof children) =>
 			inlines.map((inline) => (typeof inline === "function" ? "fn" : inline.name));
-		expect(names(children.slice(2))).toEqual(names(registryInlineExtensions("childExtensions")));
-		expect(names(children.slice(2))).toEqual(["web-access"]);
+		expect(names(children.slice(3))).toEqual(names(registryInlineExtensions("childExtensions")));
+		expect(names(children.slice(3))).toEqual(["web-access"]);
 	});
 
 	it("loads web access with its skill and drops both while the extension is off", async () => {
@@ -683,10 +882,46 @@ describe("registry extensions", () => {
 		}
 	});
 
-	it("guards every child's images and compacted skills from the base set, not the opt-in curated set", () => {
-		expect(childBaseExtensionFactories()).toEqual([oversizedImageGuard, skillCarryover]);
-		expect(childExtensionFactories()).not.toContain(oversizedImageGuard);
-		expect(childExtensionFactories()).not.toContain(skillCarryover);
+	it("a workspace without specs gets no spec-graph child and no spec rule, the rest unchanged", async () => {
+		setSpecsEnabledResolver((workspaceId) => workspaceId !== "chat-1");
+		try {
+			const withSpecs = childExtensionFactories("w1");
+			const withoutSpecs = childExtensionFactories("chat-1");
+			const specGraph = withSpecs[1];
+			if (!specGraph) throw new Error("the spec-graph child is missing");
+			expect(withoutSpecs).toHaveLength(withSpecs.length - 1);
+			expect(withoutSpecs[0]).toBe(headlessSearchPolicy);
+			expect(childExtensionFactories("w1")).toContain(specGraph);
+			expect(withoutSpecs).not.toContain(specGraph);
+			const sections = (workspaceId: string) => {
+				const handlers: ((event: unknown) => void)[] = [];
+				const pi = {
+					on: (_name: string, handler: (event: unknown) => void) => handlers.push(handler),
+				};
+				const factory = withoutSpecRule(workspaceId);
+				if (typeof factory !== "function") throw new Error("an inline factory expected");
+				void factory(pi as never);
+				const sections: Record<string, string> = { [SPEC_SECTION]: "rule", other: "kept" };
+				const event = { systemPromptOptions: { sections } };
+				for (const handler of handlers) handler(event);
+				return event.systemPromptOptions.sections;
+			};
+			expect(sections("w1")).toEqual({ [SPEC_SECTION]: "rule", other: "kept" });
+			expect(sections("chat-1")).toEqual({ other: "kept" });
+		} finally {
+			setSpecsEnabledResolver(() => true);
+		}
+	});
+
+	it("guards every child's images, artifacts and compacted skills from the tool-free base set, and offers the skill catalog only to opted-in children", () => {
+		expect(childBaseExtensionFactories()).toEqual([
+			oversizedImageGuard,
+			artifactsGuard,
+			skillCarryover,
+		]);
+		expect(childExtensionFactories("w1")).not.toContain(oversizedImageGuard);
+		expect(childExtensionFactories("w1")).not.toContain(skillCarryover);
+		expect(childExtensionFactories("w1")).toContain(skillCatalog);
 	});
 });
 
@@ -722,12 +957,12 @@ describe("pi packages", () => {
 			expect(tools()).toContain("fixture_hello");
 			expect(skills()).toContain("triage");
 			expect(prompts()).toContain("standup");
-			expect(isLoaderPackagePolicyStale(loader)).toBe(false);
+			expect(isLoaderPolicyStale(loader)).toBe(false);
 
 			disabled = new Set([`local:${pkg}`]);
-			expect(isLoaderPackagePolicyStale(loader)).toBe(true);
+			expect(isLoaderPolicyStale(loader)).toBe(true);
 			await loader.reload();
-			expect(isLoaderPackagePolicyStale(loader)).toBe(false);
+			expect(isLoaderPolicyStale(loader)).toBe(false);
 			expect(tools()).not.toContain("fixture_hello");
 			expect(skills()).not.toContain("triage");
 			expect(prompts()).not.toContain("standup");
@@ -747,9 +982,9 @@ describe("pi packages", () => {
 			);
 
 			bumpPackagesRevision();
-			expect(isLoaderPackagePolicyStale(loader)).toBe(true);
+			expect(isLoaderPolicyStale(loader)).toBe(true);
 			await loader.reload();
-			expect(isLoaderPackagePolicyStale(loader)).toBe(false);
+			expect(isLoaderPolicyStale(loader)).toBe(false);
 		} finally {
 			setDisabledPackagesResolver(() => new Set());
 			restore();

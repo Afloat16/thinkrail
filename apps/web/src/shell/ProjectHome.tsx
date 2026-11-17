@@ -1,9 +1,11 @@
 import { useT } from "@thinkrail/locales/react";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@thinkrail/ui/resizable";
+import { type ReactNode, useState } from "react";
 import { QuietScrollArea } from "../components/QuietScrollArea";
 import { ProjectTree } from "../panels/ProjectTree";
 import { WelcomePanel } from "../panels/WelcomePanel";
 import { selectOnboardingActive, useAppStore } from "../store";
+import { useKeybindingKeys } from "./keybindingState";
 import {
 	AuxiliaryPaneHeader,
 	AuxiliaryPaneHideButton,
@@ -13,6 +15,8 @@ import {
 	DEFAULT_LAYOUT_PRESET_ID,
 	resolveLayoutPreset,
 } from "./layout";
+import { renderShortcutsRailButton } from "./ShortcutsDialog";
+import { hasNativeShortcuts } from "./useAppShortcuts";
 import type { CollapsibleRegion } from "./useCollapsibleRegion";
 
 export const PROJECT_HOME_PROJECTS_REGION_ID = "welcome-left";
@@ -24,7 +28,13 @@ const PROJECTS_PANE_DEFAULT_PERCENT =
 const PROJECTS_PANE_MIN_PERCENT = 12;
 const WELCOME_MIN_PERCENT = 40;
 
-export function ProjectHome({ projects }: { projects: CollapsibleRegion<HTMLDivElement> }) {
+export function ProjectHome({
+	projects,
+	main,
+}: {
+	projects: CollapsibleRegion<HTMLDivElement>;
+	main?: ReactNode;
+}) {
 	const {
 		collapsed,
 		contentRef,
@@ -38,6 +48,9 @@ export function ProjectHome({ projects }: { projects: CollapsibleRegion<HTMLDivE
 	} = projects;
 	const t = useT();
 	const onboarding = useAppStore(selectOnboardingActive);
+	const toggleShortcut = useKeybindingKeys("view.toggleLeft");
+	const [nativeShortcuts] = useState(hasNativeShortcuts);
+	const newWorkspaceShortcut = useKeybindingKeys("workspace.new", { browser: !nativeShortcuts });
 	const entry: AuxiliaryRailToolEntry = {
 		key: PROJECTS_RAIL_ENTRY_KEY,
 		region: "left",
@@ -65,9 +78,11 @@ export function ProjectHome({ projects }: { projects: CollapsibleRegion<HTMLDivE
 							entry={entry}
 							controls={PROJECTS_PANE_ID}
 							control={control}
+							shortcut={toggleShortcut}
 							onActivate={toggle}
 						/>
 					)}
+					footer={renderShortcutsRailButton}
 				/>
 			)}
 			<ResizablePanelGroup
@@ -91,6 +106,8 @@ export function ProjectHome({ projects }: { projects: CollapsibleRegion<HTMLDivE
 							<section
 								ref={regionRef}
 								id={PROJECTS_PANE_ID}
+								data-region={PROJECTS_PANE_ID}
+								data-region-kind="home"
 								aria-label={t("shell.projectHome.projects")}
 								aria-hidden={collapsed || undefined}
 								inert={collapsed ? true : undefined}
@@ -102,6 +119,7 @@ export function ProjectHome({ projects }: { projects: CollapsibleRegion<HTMLDivE
 										<AuxiliaryPaneHideButton
 											testId="side-group-fold"
 											controls={PROJECTS_PANE_ID}
+											shortcut={toggleShortcut}
 											onClick={toggle}
 										/>
 									}
@@ -113,10 +131,11 @@ export function ProjectHome({ projects }: { projects: CollapsibleRegion<HTMLDivE
 								>
 									<QuietScrollArea
 										data-testid="left-nav"
+										data-focus-default
 										className="min-h-0 flex-1"
 										viewportClassName="p-panel-inset"
 									>
-										<ProjectTree />
+										<ProjectTree newWorkspaceShortcut={newWorkspaceShortcut} />
 									</QuietScrollArea>
 								</div>
 							</section>
@@ -137,9 +156,7 @@ export function ProjectHome({ projects }: { projects: CollapsibleRegion<HTMLDivE
 					defaultSize={100 - PROJECTS_PANE_DEFAULT_PERCENT}
 					minSize={WELCOME_MIN_PERCENT}
 				>
-					<div className="h-full min-h-0 bg-container-content-bg">
-						<WelcomePanel />
-					</div>
+					<div className="h-full min-h-0 bg-container-content-bg">{main ?? <WelcomePanel />}</div>
 				</ResizablePanel>
 			</ResizablePanelGroup>
 		</div>

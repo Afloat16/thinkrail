@@ -1,8 +1,10 @@
 import type {
 	Ack,
 	AppConfig,
+	ChatContinuation,
 	ExtUiRequest,
 	HostUpdateNotice,
+	KeybindingOverrides,
 	LoginPush,
 	McpStatusPayload,
 	Project,
@@ -12,8 +14,12 @@ import type {
 	SessionDeletedPayload,
 	SessionEventPayload,
 	SessionStateRecord,
+	SpeechStatus,
 	TurnChangeSet,
 	Workspace,
+	WorkspaceArtifactsChangedPayload,
+	WorkspaceCreation,
+	WorkspaceCreationRemoved,
 	WorkspaceFsChangedPayload,
 	WorkspaceRemoved,
 	WsParams,
@@ -21,22 +27,28 @@ import type {
 } from "@thinkrail/contracts";
 import {
 	CHANGE_MUTATIONS_PROTOCOL_VERSION,
+	EXTENSION_SETTINGS_PROTOCOL_VERSION,
 	FEEDBACK_SURVEY_PROTOCOL_VERSION,
 	FONTS_PROTOCOL_VERSION,
 	HOST_UPDATE_RUN_PROTOCOL_VERSION,
+	KEYBINDINGS_PROTOCOL_VERSION,
 	LOCALES_PROTOCOL_VERSION,
 	PI_PACKAGES_PROTOCOL_VERSION,
 	PLAN_REVIEW_SUBAGENT_PROTOCOL_VERSION,
 	PLAN_SUMMARY_GENERATION_PROTOCOL_VERSION,
 	REVIEW_RICH_ANCHORS_PROTOCOL_VERSION,
 	SESSION_STATE_PROTOCOL_VERSION,
+	SPEECH_PROTOCOL_VERSION,
+	TEXT_SEARCH_PROTOCOL_VERSION,
 	TOOL_RESPONSE_PROTOCOL_VERSION,
 	TURN_CHANGES_PROTOCOL_VERSION,
 	USER_THEMES_PROTOCOL_VERSION,
+	WORKSPACE_CREATION_PROTOCOL_VERSION,
 	WS_CHANNELS,
 } from "@thinkrail/contracts";
 import { currentLocale } from "@thinkrail/locales/react";
-import { isConnectedGeneration, useAppStore } from "../store";
+import { isChatsContainer, isConnectedGeneration, useAppStore } from "../store";
+import { githubStarToast } from "./githubStar";
 import { createPiEventBatcher, shouldFlushPiEventsBefore } from "./piEventBatcher";
 import { WsTransport } from "./transport";
 
@@ -50,12 +62,31 @@ export function supportsUserThemes(protocolVersion: number | null): boolean {
 	return protocolVersion !== null && protocolVersion >= USER_THEMES_PROTOCOL_VERSION;
 }
 
+export function supportsExtensionSettings(protocolVersion: number | null): boolean {
+	return protocolVersion !== null && protocolVersion >= EXTENSION_SETTINGS_PROTOCOL_VERSION;
+}
+
+export function supportsKeybindings(protocolVersion: number | null): boolean {
+	return protocolVersion !== null && protocolVersion >= KEYBINDINGS_PROTOCOL_VERSION;
+}
+
+export function updateKeybindings(keybindings: KeybindingOverrides): Promise<boolean> {
+	if (!supportsKeybindings(useAppStore.getState().protocolVersion)) return Promise.resolve(false);
+	return getTransport()
+		.request("settings.update", { config: { keybindings } })
+		.then(() => true);
+}
+
 export function supportsPiPackages(protocolVersion: number | null): boolean {
 	return protocolVersion !== null && protocolVersion >= PI_PACKAGES_PROTOCOL_VERSION;
 }
 
 export function supportsFonts(protocolVersion: number | null): boolean {
 	return protocolVersion !== null && protocolVersion >= FONTS_PROTOCOL_VERSION;
+}
+
+export function supportsSpeech(protocolVersion: number | null): boolean {
+	return protocolVersion !== null && protocolVersion >= SPEECH_PROTOCOL_VERSION;
 }
 
 export function supportsToolResponses(protocolVersion: number | null): boolean {
@@ -84,6 +115,10 @@ export function supportsRichAnchors(protocolVersion: number | null): boolean {
 
 export function supportsTurnChanges(protocolVersion: number | null): boolean {
 	return protocolVersion !== null && protocolVersion >= TURN_CHANGES_PROTOCOL_VERSION;
+}
+
+export function supportsTextSearch(protocolVersion: number | null): boolean {
+	return protocolVersion !== null && protocolVersion >= TEXT_SEARCH_PROTOCOL_VERSION;
 }
 
 export function runHostUpdate(): Promise<Ack> {
@@ -228,18 +263,75 @@ function refreshUserFonts(connectionGeneration: number): void {
 function refreshLoadedWorkspaceLists(connectionGeneration: number): void {
 	const snapshot = useAppStore.getState();
 	const openProjectIds = new Set(snapshot.projects.map((project) => project.id));
-	for (const projectId of Object.keys(snapshot.workspaces)) {
+	for (const [projectId, held] of Object.entries(snapshot.workspaces)) {
 		if (!openProjectIds.has(projectId)) continue;
+		const heldAtRequest = held.map((workspace) => workspace.id);
 		void getTransport()
 			.request("workspace.list", { projectId, includeDiffStats: false })
 			.then((workspaces) => {
 				const current = useAppStore.getState();
 				if (!isConnectedGeneration(current, connectionGeneration)) return;
-				if (!current.projects.some((project) => project.id === projectId)) return;
-				for (const workspace of workspaces) current.updateWorkspace(workspace);
+				applyWorkspaceListRefresh(projectId, heldAtRequest, workspaces);
 			})
 			.catch(() => {});
 	}
+}
+
+export function applyWorkspaceListRefresh(
+	projectId: string,
+	heldAtRequest: readonly string[],
+	workspaces: readonly Workspace[],
+): void {
+	const store = useAppStore.getState();
+	const project = store.projects.find((candidate) => candidate.id === projectId);
+	if (!project) return;
+	const held = new Set(store.workspaces[projectId]?.map((workspace) => workspace.id));
+	for (const workspace of workspaces) {
+		if (held.has(workspace.id)) store.updateWorkspace(workspace);
+		else if (isChatsContainer(project)) store.addWorkspace(workspace);
+	}
+	const listed = new Set(workspaces.map((workspace) => workspace.id));
+	for (const workspaceId of heldAtRequest) {
+		if (listed.has(workspaceId)) continue;
+		const held = useAppStore.getState().workspaces[projectId];
+		if (held?.some((workspace) => workspace.id === workspaceId)) {
+			retireWorkspace(projectId, workspaceId);
+		}
+	}
+}
+
+export function retireWorkspace(projectId: string, workspaceId: string): void {
+	const state = useAppStore.getState();
+	const login = state.activeLogin;
+	state.applyWorkspaceRemoved(projectId, workspaceId);
+	if (login?.target?.workspaceId === workspaceId) {
+		void getTransport()
+			.request("provider.loginCancel", { loginId: login.loginId })
+			.catch(() => {});
+	}
+}
+
+async function loadWorkspaceCreations(connectionGeneration: number): Promise<void> {
+	const creations = await getTransport().request("workspace.listCreations", {});
+	const before = useAppStore.getState();
+	if (!isConnectedGeneration(before, connectionGeneration)) return;
+	const watched = before.activeCreationId
+		? before.workspaceCreations[before.activeCreationId]
+		: undefined;
+	before.setWorkspaceCreations(creations);
+	if (!watched || creations.some((creation) => creation.id === watched.id)) return;
+	const rows = await getTransport().request("workspace.list", {
+		projectId: watched.projectId,
+		includeDiffStats: false,
+	});
+	const current = useAppStore.getState();
+	if (!isConnectedGeneration(current, connectionGeneration)) return;
+	current.setWorkspaces(watched.projectId, rows);
+	current.landOnFinishedCreation(watched.projectId, watched.id);
+}
+
+function refreshWorkspaceCreations(connectionGeneration: number): void {
+	void loadWorkspaceCreations(connectionGeneration).catch(() => {});
 }
 
 export function initTransport(): WsTransport {
@@ -280,12 +372,16 @@ export function initTransport(): WsTransport {
 					: undefined,
 				welcome.hostUpdate,
 				typeof welcome.appVersion === "string" ? welcome.appVersion : undefined,
+				welcome.speech,
 			);
 		const connectionGeneration = useAppStore.getState().connectionGeneration;
 		refreshLoadedWorkspaceLists(connectionGeneration);
 		refreshLocalLocales(connectionGeneration);
 		refreshUserThemes(connectionGeneration);
 		refreshUserFonts(connectionGeneration);
+		if (welcome.protocolVersion >= WORKSPACE_CREATION_PROTOCOL_VERSION)
+			refreshWorkspaceCreations(connectionGeneration);
+		else useAppStore.getState().setWorkspaceCreations([]);
 		if (welcome.protocolVersion >= SESSION_STATE_PROTOCOL_VERSION) {
 			hydrateSessionStates(connectionGeneration);
 		} else {
@@ -386,10 +482,18 @@ export function initTransport(): WsTransport {
 		refreshUserFonts(useAppStore.getState().connectionGeneration);
 	});
 
+	transport.subscribe(WS_CHANNELS.speechChanged, (data) => {
+		useAppStore.getState().installSpeechStatus(data as SpeechStatus);
+	});
+
 	transport.subscribe(WS_CHANNELS.feedbackInterview, () => {
 		const state = useAppStore.getState();
 		if ((state.protocolVersion ?? 0) < FEEDBACK_SURVEY_PROTOCOL_VERSION) return;
 		state.showSurveyInvitation();
+	});
+
+	transport.subscribe(WS_CHANNELS.feedbackGithubStar, (data) => {
+		useAppStore.getState().pushToast(githubStarToast(data));
 	});
 
 	transport.subscribe(WS_CHANNELS.workspaceCreated, (data) => {
@@ -404,20 +508,24 @@ export function initTransport(): WsTransport {
 		}
 	});
 
+	transport.subscribe(WS_CHANNELS.workspaceCreationChanged, (data) => {
+		useAppStore.getState().applyWorkspaceCreation(data as WorkspaceCreation);
+	});
+
+	transport.subscribe(WS_CHANNELS.workspaceCreationRemoved, (data) => {
+		useAppStore.getState().applyWorkspaceCreationRemoved(data as WorkspaceCreationRemoved);
+	});
+
 	transport.subscribe(WS_CHANNELS.workspaceUpdated, (data) => {
 		useAppStore.getState().updateWorkspace(data as Workspace);
 	});
 
+	transport.subscribe(WS_CHANNELS.chatContinuation, (data) => {
+		useAppStore.getState().applyChatContinuation(data as ChatContinuation);
+	});
 	transport.subscribe(WS_CHANNELS.workspaceRemoved, (data) => {
 		const { projectId, id } = data as WorkspaceRemoved;
-		const state = useAppStore.getState();
-		const login = state.activeLogin;
-		state.applyWorkspaceRemoved(projectId, id);
-		if (login?.target?.workspaceId === id) {
-			void getTransport()
-				.request("provider.loginCancel", { loginId: login.loginId })
-				.catch(() => {});
-		}
+		retireWorkspace(projectId, id);
 	});
 
 	transport.subscribe(WS_CHANNELS.reviewChanged, (data) => {
@@ -427,6 +535,12 @@ export function initTransport(): WsTransport {
 
 	transport.subscribe(WS_CHANNELS.workspaceFsChanged, (data) => {
 		useAppStore.getState().noteFsChanged(data as WorkspaceFsChangedPayload);
+	});
+
+	transport.subscribe(WS_CHANNELS.workspaceArtifactsChanged, (data) => {
+		useAppStore
+			.getState()
+			.noteArtifactsChanged((data as WorkspaceArtifactsChangedPayload).workspaceId);
 	});
 
 	transport.subscribe(WS_CHANNELS.turnChanged, (data) => {

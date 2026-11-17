@@ -3,24 +3,30 @@ import {
 	type AppConfigUpdate,
 	CODE_FONT_SIZE,
 	COMPOSER_GROWTH_LIMITS,
+	type ExtensionSettingValues,
 	FONT_WEIGHT_OFFSET,
 	isCodeFontSize,
 	isComposerGrowthLimit,
 	isFontChoice,
 	isFontWeightOffset,
 	isJbcentralQuotaRefreshSeconds,
+	isKeybindingOverrides,
 	isLineWidth,
 	isLocalePreference,
+	isQuestionPanelHeight,
 	isSettleIdleDays,
 	isSubagentMaxConcurrent,
 	isSystemThemePair,
 	isTerminalWindowsShell,
 	isThemeMode,
+	type KeybindingOverrides,
 	LINE_WIDTH_COLUMNS,
+	QUESTION_PANEL_HEIGHT_PERCENT,
 	RECENT_MODELS_LIMIT,
 	sameModel,
 	type WireModel,
 } from "@thinkrail/contracts";
+import { CodedError } from "@thinkrail/shared/codedError";
 import { loadConfig, saveConfig } from "../persistence";
 import { normalizeStoredCustomLayoutPresets, validateCustomLayoutPresets } from "./layoutPresets";
 
@@ -41,10 +47,12 @@ const ACCEPTED_UPDATE_KEYS = {
 	terminalReplayKb: true,
 	terminalWindowsShell: true,
 	composerGrowthLimit: true,
+	questionPanelHeight: true,
 	chatLineWidth: true,
 	fileLineWidth: true,
 	chatLineWidthBounded: true,
 	fileLineWidthBounded: true,
+	voiceInputEnabled: true,
 	customLayoutPresets: true,
 	favoriteModels: true,
 	defaultModel: true,
@@ -59,6 +67,8 @@ const ACCEPTED_UPDATE_KEYS = {
 	jbcentralQuotaRefreshSeconds: true,
 	settleIdleDays: true,
 	disabledExtensions: true,
+	extensionSettings: true,
+	otherAgentSkills: true,
 	disabledPackages: true,
 	locale: true,
 	onboardingDismissed: true,
@@ -67,6 +77,7 @@ const ACCEPTED_UPDATE_KEYS = {
 	codeFontSize: true,
 	codeLigatures: true,
 	fontWeightOffset: true,
+	keybindings: true,
 	chatMessageOrder: true,
 	layout: true,
 	recentModels: true,
@@ -100,6 +111,38 @@ function validateFavoriteModels(value: unknown): WireModel[] {
 	return value.filter((model, index) => value.findIndex((m) => sameModel(m, model)) === index);
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validateExtensionSettings(value: unknown): ExtensionSettingValues {
+	const invalid = () => new Error("extensionSettings must map extension names to boolean settings");
+	if (!isPlainObject(value)) throw invalid();
+	const result: ExtensionSettingValues = {};
+	for (const [name, settings] of Object.entries(value)) {
+		if (name.trim().length === 0 || !isPlainObject(settings)) throw invalid();
+		const entries = Object.entries(settings);
+		const flags = entries.filter(
+			(entry): entry is [string, boolean] =>
+				entry[0].trim().length > 0 && typeof entry[1] === "boolean",
+		);
+		if (flags.length !== entries.length) throw invalid();
+		result[name] = Object.fromEntries(flags);
+	}
+	return result;
+}
+
+function mergeExtensionSettings(
+	current: ExtensionSettingValues,
+	update: ExtensionSettingValues,
+): ExtensionSettingValues {
+	const next: ExtensionSettingValues = { ...current };
+	for (const [name, settings] of Object.entries(update)) {
+		next[name] = { ...(current[name] ?? {}), ...settings };
+	}
+	return next;
+}
+
 function validateNameList(value: unknown, setting: string, noun: string): string[] {
 	if (
 		!Array.isArray(value) ||
@@ -108,6 +151,18 @@ function validateNameList(value: unknown, setting: string, noun: string): string
 		throw new Error(`${setting} must be a list of ${noun}`);
 	}
 	return [...new Set(value as string[])];
+}
+
+function validateKeybindings(value: unknown): KeybindingOverrides {
+	if (!isKeybindingOverrides(value)) {
+		throw new CodedError(
+			"KEYBINDINGS_INVALID",
+			"keybindings must map command ids to lists of chords such as Mod+Alt+KeyS",
+		);
+	}
+	return Object.fromEntries(
+		Object.entries(value).map(([id, chords]) => [id, [...new Set(chords)]]),
+	);
 }
 
 let publishSettings: SettingsPublisher | null = null;
@@ -144,9 +199,18 @@ export function updateConfig(partial: AppConfigUpdate): AppConfig {
 			);
 		}
 	}
+	if (
+		runtimeUpdate.questionPanelHeight !== undefined &&
+		!isQuestionPanelHeight(runtimeUpdate.questionPanelHeight)
+	) {
+		throw new Error(
+			`questionPanelHeight must be a whole number from ${QUESTION_PANEL_HEIGHT_PERCENT.min} to ${QUESTION_PANEL_HEIGHT_PERCENT.max}`,
+		);
+	}
 	for (const [name, value] of [
 		["chatLineWidthBounded", runtimeUpdate.chatLineWidthBounded],
 		["fileLineWidthBounded", runtimeUpdate.fileLineWidthBounded],
+		["voiceInputEnabled", runtimeUpdate.voiceInputEnabled],
 		["analyticsEnabled", runtimeUpdate.analyticsEnabled],
 		["analyticsConsentConfirmed", runtimeUpdate.analyticsConsentConfirmed],
 		["notificationsEnabled", runtimeUpdate.notificationsEnabled],
@@ -154,6 +218,7 @@ export function updateConfig(partial: AppConfigUpdate): AppConfig {
 		["agentReviewEnabled", runtimeUpdate.agentReviewEnabled],
 		["onboardingDismissed", runtimeUpdate.onboardingDismissed],
 		["codeLigatures", runtimeUpdate.codeLigatures],
+		["otherAgentSkills", runtimeUpdate.otherAgentSkills],
 	] as const) {
 		if (value !== undefined && typeof value !== "boolean") {
 			throw new Error(`${name} must be a boolean`);
@@ -201,9 +266,14 @@ export function updateConfig(partial: AppConfigUpdate): AppConfig {
 		jbcentralQuotaEnabled,
 		jbcentralQuotaRefreshSeconds,
 		disabledExtensions,
+		extensionSettings,
 		disabledPackages,
+		keybindings,
 		...rest
 	} = runtimeUpdate;
+	const nextKeybindings = keybindings === undefined ? undefined : validateKeybindings(keybindings);
+	const extensionSettingsUpdate =
+		extensionSettings === undefined ? undefined : validateExtensionSettings(extensionSettings);
 	const nextDisabledExtensions =
 		disabledExtensions === undefined
 			? undefined
@@ -304,7 +374,16 @@ export function updateConfig(partial: AppConfigUpdate): AppConfig {
 			? {}
 			: { favoriteModels: validateFavoriteModels(favoriteModels) }),
 		...(nextDisabledExtensions === undefined ? {} : { disabledExtensions: nextDisabledExtensions }),
+		...(extensionSettingsUpdate === undefined
+			? {}
+			: {
+					extensionSettings: mergeExtensionSettings(
+						current.extensionSettings ?? {},
+						extensionSettingsUpdate,
+					),
+				}),
 		...(nextDisabledPackages === undefined ? {} : { disabledPackages: nextDisabledPackages }),
+		...(nextKeybindings === undefined ? {} : { keybindings: nextKeybindings }),
 	};
 	if (defaultModel !== undefined) {
 		if (defaultModel === null) delete next.defaultModel;
