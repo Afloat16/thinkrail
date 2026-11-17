@@ -30,7 +30,8 @@ surface** — no wire method; consumers are host-side flows.
     through the same tool-free cheap-model path, or `null` (best-effort: `null`, never throws, on no auth /
     timeout / no usable steps / empty output). `toPlanSummary(raw)` is the pure output guard (strip a code
     fence and a leading `Summary:` label, clamp length, then reshape into `## Summary` / `## Changes` /
-    `## Testing` — a missing section gets a placeholder, and a missing Summary takes the text before the
+    `## Testing` — heading matching is case-insensitive and preserves the section bodies. A missing
+    section gets a placeholder, and a missing Summary takes the text before the
     first heading; `null` when empty). The host persists the result
     only when non-null; it never overwrites an agent-authored `plan.summary`.
   - `suggestPrDescription(input)` → a Markdown PR/MR description drafted from the caller-built input

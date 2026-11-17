@@ -4,6 +4,7 @@ import {
 	setOneShotRunner,
 	suggestPlanSummary,
 	suggestPrDescription,
+	toPlanSummary,
 	toPrDescription,
 } from "./assist";
 
@@ -152,4 +153,37 @@ test("suggestPrDescription is best-effort: nothing to describe, a throw, or empt
 	expect(calls).toBe(1);
 	expect(toPrDescription("```\n\n```")).toBeNull();
 	expect(toPrDescription("  ## Summary\n\nDone. ")).toBe("## Summary\n\nDone.");
+});
+
+test("toPlanSummary preserves bodies under mixed-case section headings", () => {
+	const raw =
+		"## summary\n\nPreserve the saved model.\n\n" +
+		"## CHANGES\n\nWrite each chunk completely.\n\n" +
+		"## TeStInG\n\n- native download: passed";
+	expect(toPlanSummary(raw)).toBe(
+		"## Summary\n\nPreserve the saved model.\n\n" +
+			"## Changes\n\nWrite each chunk completely.\n\n" +
+			"## Testing\n\n- native download: passed",
+	);
+});
+
+test("toPlanSummary fills only missing sections when noncanonical headings are reordered", () => {
+	const raw =
+		"## testing\n\n- regression: passed\n\n" + "## SUMMARY\n\nThe transcript remains intact.";
+	expect(toPlanSummary(raw)).toBe(
+		"## Summary\n\nThe transcript remains intact.\n\n" +
+			"## Changes\n\n_no cross-cutting notes_\n\n" +
+			"## Testing\n\n- regression: passed",
+	);
+});
+
+test("toPlanSummary keeps the first recognized body when a section heading repeats", () => {
+	const raw =
+		"## summary\n\nKeep the first summary.\n\n" +
+		"## Summary\n\nA repeated summary.\n\n" +
+		"## Changes\n\n- Preserve order\n\n## Testing\n\n- regression: passed";
+	expect(toPlanSummary(raw)).toBe(
+		"## Summary\n\nKeep the first summary.\n\n" +
+			"## Changes\n\n- Preserve order\n\n## Testing\n\n- regression: passed",
+	);
 });

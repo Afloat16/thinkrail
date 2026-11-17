@@ -107,7 +107,7 @@ function splitBySections(text: string): Sections {
 		bodyStart: (m.index ?? 0) + m[0].length,
 	}));
 	const body = (name: "Summary" | "Changes" | "Testing"): string | undefined => {
-		const idx = spans.findIndex((s) => s.name === name);
+		const idx = spans.findIndex((s) => s.name.toLowerCase() === name.toLowerCase());
 		if (idx < 0) return undefined;
 		// Stop at the next heading so a later section cannot be absorbed when an earlier one is missing.
 		const end = spans[idx + 1]?.headingStart ?? text.length;
