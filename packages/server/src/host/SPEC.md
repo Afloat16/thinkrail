@@ -150,7 +150,9 @@ nudges `fsChanged`. Nothing cleans the folder: sent messages keep naming its fil
   handler settled, and a result settling after a reconnect went to the dead socket and sat until the next
   `resume`, so enough slow requests filled the namespace and refused every later request from that window.
   Abandoned work is still running work, so it stays bounded (the tracked ceiling below). Each `ack`/`resume`
-  that abandons running work logs one `warn` with the per-method counts; `RequestAbandonedError`
+  that abandons running work logs one `debug` with the per-method counts. The host emits a nonempty
+  per-method `warn` summary once per minute, and flushes the last partial summary on shutdown.
+  `RequestAbandonedError`
   (`code: "REQUEST_ABANDONED"`, tagged with the method) is reported once per method per launch and for at most
   10 methods, because it shares the `request` source's fixed per-launch report budget with genuine handler
   failures and the overflow report, and a reload's new client key must not renew it. Requests that settle

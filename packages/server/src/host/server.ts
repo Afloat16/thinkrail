@@ -241,6 +241,7 @@ import {
 	setupObservation,
 } from "./productAnalytics";
 import {
+	AbandonmentLogSummary,
 	AbandonmentReportBudget,
 	heaviestReplayMethod,
 	type ReplayLoad,
@@ -420,9 +421,18 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 	const reapTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	const requestReplays = new RequestReplayCache<string>();
 	const abandonmentReports = new AbandonmentReportBudget();
+	const abandonmentSummary = new AbandonmentLogSummary();
+	const flushAbandonmentSummary = (): void => {
+		const summary = abandonmentSummary.take();
+		if (summary !== undefined)
+			log.warn(`requests abandoned before their handlers settled: ${summary}`);
+	};
+	const abandonmentSummaryTimer = setInterval(flushAbandonmentSummary, 60_000);
+	abandonmentSummaryTimer.unref();
 	const reportAbandoned = (methods: readonly string[]): void => {
 		if (methods.length === 0) return;
-		log.warn(`requests abandoned before their handlers settled: ${countMethods(methods)}`);
+		abandonmentSummary.record(methods);
+		log.debug(`requests abandoned before their handlers settled: ${countMethods(methods)}`);
 		for (const method of new Set(methods)) {
 			if (abandonmentReports.admit(method))
 				reportError(new RequestAbandonedError(), requestErrorReport(method));
@@ -1294,6 +1304,8 @@ export async function createServer(options: CreateServerOptions = {}): Promise<R
 		if (stopping) return;
 		stopping = true;
 		clearInterval(reviewRefreshTimer);
+		clearInterval(abandonmentSummaryTimer);
+		flushAbandonmentSummary();
 		setupObservation.clear();
 		runObservation.reset();
 		taskObservation.clear();

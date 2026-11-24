@@ -46,6 +46,24 @@ export class AbandonmentReportBudget {
 	}
 }
 
+/** Count abandoned requests between warning summaries without retaining request ids. */
+export class AbandonmentLogSummary {
+	private readonly counts = new Map<string, number>();
+
+	record(methods: readonly string[]): void {
+		for (const method of methods) {
+			this.counts.set(method, (this.counts.get(method) ?? 0) + 1);
+		}
+	}
+
+	take(): string | undefined {
+		if (this.counts.size === 0) return undefined;
+		const summary = [...this.counts].map(([method, count]) => `${method} ×${count}`).join(", ");
+		this.counts.clear();
+		return summary;
+	}
+}
+
 export class RequestReplayUnretainedError extends Error {
 	constructor(id: string) {
 		super(`request id "${id}" already executed; its response exceeded the retention budget`);

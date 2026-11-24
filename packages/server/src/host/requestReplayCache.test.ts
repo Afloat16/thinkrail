@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { errorCodeOf } from "@thinkrail/shared/codedError";
 import {
+	AbandonmentLogSummary,
 	AbandonmentReportBudget,
 	heaviestReplayMethod,
 	RequestReplayCache,
@@ -320,6 +321,19 @@ describe("request replay cache", () => {
 		await run;
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		expect(cache.clearClient("page")).toBe(true);
+	});
+
+	test("abandonment warning summaries accumulate counts once and reset after draining", () => {
+		const summary = new AbandonmentLogSummary();
+		expect(summary.take()).toBeUndefined();
+		summary.record(["todo.list", "todo.list", "git.status"]);
+		summary.record(["todo.list"]);
+		expect(summary.take()).toBe("todo.list ×3, git.status ×1");
+		expect(summary.take()).toBeUndefined();
+		summary.record([]);
+		expect(summary.take()).toBeUndefined();
+		summary.record(["git.status"]);
+		expect(summary.take()).toBe("git.status ×1");
 	});
 
 	test("abandonment reports admit each method once and stop at a fixed allowance", () => {
