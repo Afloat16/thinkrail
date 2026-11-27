@@ -1,4 +1,0 @@
-User-agent: *
-Allow: /
-
-Sitemap: https://thinkrail.ai/sitemap-index.xml
